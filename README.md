@@ -23,7 +23,7 @@ codex plugin marketplace add martinille/codex-tasklist
 codex plugin add codex-tasklist@codex-tasklist
 ```
 
-Review and trust the plugin hooks in `/hooks`, then start a new Codex session in WezTerm. The repository is currently private, so GitHub access is required.
+Review and trust the plugin hooks in `/hooks`, then start a new Codex session in WezTerm.
 
 **Outside WezTerm:** queue commands work in Bash and PowerShell, but the automatic panel does not.
 

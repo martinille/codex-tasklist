@@ -2,12 +2,15 @@
   "name": "codex-tasklist",
   "version": "1.0.2",
   "description": "Persistent per-session user-request queue for Codex CLI in WezTerm",
+  "repository": "https://github.com/martinille/codex-tasklist",
+  "license": "MIT",
   "author": {
     "name": "Martin Ille"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Tasklist",
+    "composerIcon": "./assets/icon.svg",
     "shortDescription": "A persistent task queue below Codex in WezTerm.",
     "longDescription": "Track user requests with stable IDs, live statuses, scrolling and adjustable panel height. Opens automatically in WezTerm. Local storage; no patched Codex binary.",
     "developerName": "Martin Ille",
