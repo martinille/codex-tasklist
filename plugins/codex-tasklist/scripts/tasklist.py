@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import uuid
 import process_owner
 
 if os.name != 'nt':
@@ -84,6 +85,8 @@ def connect(directory):
             session TEXT PRIMARY KEY, pane TEXT, parent TEXT, socket TEXT,
             closed INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS panel_openers (
+            session TEXT PRIMARY KEY, pid INTEGER NOT NULL, started TEXT NOT NULL, token TEXT NOT NULL);
     ''')
     with db:
         db.execute('BEGIN IMMEDIATE')
@@ -154,12 +157,45 @@ def open_panel(db, directory, session):
     identity = process_owner.discover()
     if identity is None or not process_owner.alive(identity):
         raise ValueError('Start Codex CLI in WezTerm to open its task panel; no live Codex owner was found.')
+    started = process_owner.process(os.getpid())
+    if started is None:
+        raise ValueError('The panel creator process is unavailable. Retry in a fresh Codex session.')
+    token = uuid.uuid4().hex
+    deadline = time.monotonic() + 2
+    while True:
+        with db:
+            db.execute('BEGIN IMMEDIATE')
+            opening = db.execute('SELECT * FROM panel_openers WHERE session=?', (session,)).fetchone()
+            acquired = opening is None or not process_owner.alive((opening['pid'], opening['started']))
+            if acquired:
+                db.execute('INSERT INTO panel_openers VALUES (?,?,?,?) ON CONFLICT(session) DO UPDATE SET '
+                           'pid=excluded.pid,started=excluded.started,token=excluded.token',
+                           (session, os.getpid(), started[1], token))
+        if acquired:
+            break
+        if time.monotonic() >= deadline:
+            raise ValueError('A task panel is already opening. Retry on the next prompt.')
+        time.sleep(0.05)
+    try:
+        create_panel(db, directory, session, parent, identity, token)
+    finally:
+        with db:
+            db.execute('DELETE FROM panel_openers WHERE session=? AND token=?', (session, token))
+
+
+def create_panel(db, directory, session, parent, identity, token):
+    if not process_owner.alive(identity):
+        return
     panes = json.loads(wezterm('list', '--format', 'json'))
     owner = next((pane for pane in panes if str(pane['pane_id']) == parent), None)
     if owner is None:
         return
     socket = os.environ.get('WEZTERM_UNIX_SOCKET', '')
     existing = db.execute('SELECT * FROM sessions WHERE session=?', (session,)).fetchone()
+    if (existing and not existing['closed'] and existing['owner_pid'] and
+            (existing['owner_pid'], existing['owner_start']) != identity and
+            process_owner.alive((existing['owner_pid'], existing['owner_start']))):
+        raise ValueError('This session already belongs to another live Codex process. Close it before resuming here.')
     if (existing and existing['parent'] == parent and existing['socket'] == socket and
             (existing['owner_pid'], existing['owner_start']) == identity):
         if any(str(pane['pane_id']) == existing['pane'] and
@@ -178,10 +214,20 @@ def open_panel(db, directory, session):
     pane = wezterm('split-pane', '--pane-id', parent, '--bottom', '--cells', height,
                    '--', sys.executable, SCRIPT, '--data-dir', directory,
                    '--session', session, 'view', '--parent', parent,
-                   '--owner-pid', identity[0], '--owner-start', identity[1])
-    with db:
-        db.execute('UPDATE sessions SET pane=?,parent=?,socket=? WHERE session=?',
-                   (pane, parent, socket, session))
+                   '--owner-pid', identity[0], '--owner-start', identity[1], '--opening-token', token)
+    try:
+        with db:
+            saved = db.execute('UPDATE sessions SET pane=?,parent=?,socket=? WHERE session=? AND owner_pid=? AND owner_start=?',
+                               (pane, parent, socket, session, *identity))
+            if not saved.rowcount:
+                raise sqlite3.IntegrityError('The session owner changed before its panel was registered.')
+    except (sqlite3.Error, OSError):
+        if pane.isdigit() and pane not in {str(item['pane_id']) for item in panes}:
+            try:
+                wezterm('kill-pane', '--pane-id', pane)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        raise
     wezterm('activate-pane', '--pane-id', parent)
 
 
@@ -257,7 +303,7 @@ def clipped(text, cells):
     return result
 
 
-def view(db, session, parent, identity=None):
+def view(db, session, parent, identity=None, opening_token=None):
     state = db.execute('SELECT * FROM sessions WHERE session=?', (session,)).fetchone()
     if not state or not state['owner_pid'] or not state['owner_start']:
         raise ValueError('Start Codex CLI in WezTerm before opening its task panel.')
@@ -267,6 +313,7 @@ def view(db, session, parent, identity=None):
         raise ValueError('This task panel has no matching live Codex owner. Start a fresh Codex CLI session.')
     parent = parent if parent is not None else state['parent']
     socket = state['socket']
+    pane = os.environ.get('WEZTERM_PANE')
     fd = sys.stdin.fileno()
     read_input, restore_input = terminal_input(fd)
     offset, pending, last_frame = 0, b'', None
@@ -282,6 +329,11 @@ def view(db, session, parent, identity=None):
             if (not state or state['closed'] or (state['owner_pid'], state['owner_start']) != identity or
                     state['parent'] != parent or state['socket'] != socket or not process_owner.alive(identity)):
                 return
+            if pane and state['pane'] != pane:
+                opening = db.execute('SELECT * FROM panel_openers WHERE session=?', (session,)).fetchone()
+                if (not opening or opening['token'] != opening_token or
+                        not process_owner.alive((opening['pid'], opening['started']))):
+                    return
             width, height = os.get_terminal_size(sys.stdout.fileno())
             requested = row_count(db)
             if requested != last_rows:
@@ -370,6 +422,7 @@ def main():
     panel.add_argument('--parent')
     panel.add_argument('--owner-pid', type=int, help=argparse.SUPPRESS)
     panel.add_argument('--owner-start', help=argparse.SUPPRESS)
+    panel.add_argument('--opening-token', help=argparse.SUPPRESS)
     rows = sub.add_parser('rows')
     rows.add_argument('count', type=int)
     args = parser.parse_args()
@@ -395,7 +448,7 @@ def main():
                 open_panel(db, directory, session)
             elif args.command == 'view':
                 identity = (args.owner_pid, args.owner_start) if args.owner_pid and args.owner_start else None
-                view(db, session, args.parent, identity)
+                view(db, session, args.parent, identity, args.opening_token)
     except (ValueError, OSError, sqlite3.Error, subprocess.SubprocessError) as error:
         print(f'Codex Tasklist: {error}', file=sys.stderr)
         return 1

@@ -85,6 +85,51 @@ class TasklistTest(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT closed FROM sessions').fetchone()[0], 1)
         self.assertEqual(len(tasklist.tasks(self.db, 'session')), 1)
 
+    def test_split_failure_releases_reservation_and_can_retry(self):
+        parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
+        responses = [json.dumps([parent]), subprocess.CalledProcessError(1, 'split-pane'),
+                     json.dumps([parent]), '2', '']
+        with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
+                patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
+                patch.object(tasklist, 'wezterm', side_effect=responses):
+            with self.assertRaises(subprocess.CalledProcessError):
+                tasklist.open_panel(self.db, self.root, 'retry')
+            self.assertEqual(self.db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 0)
+            tasklist.open_panel(self.db, self.root, 'retry')
+        self.assertEqual(self.db.execute('SELECT pane FROM sessions').fetchone()[0], '2')
+
+    def test_registration_failure_closes_only_new_pane(self):
+        parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
+        self.db.execute("CREATE TRIGGER reject_registration BEFORE UPDATE OF pane ON sessions "
+                        "BEGIN SELECT RAISE(FAIL, 'test registration failure'); END")
+        with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
+                patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
+                patch.object(tasklist, 'wezterm', side_effect=[json.dumps([parent, {'pane_id': 9}]), '2', '']) as call:
+            with self.assertRaises(tasklist.sqlite3.IntegrityError):
+                tasklist.open_panel(self.db, self.root, 'registration')
+        self.assertEqual([args.args for args in call.call_args_list if args.args[0] == 'kill-pane'],
+                         [('kill-pane', '--pane-id', '2')])
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 0)
+
+    def test_stale_owner_cannot_steal_live_session(self):
+        other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            started = tasklist.process_owner.process(other.pid)[1]
+            with self.db:
+                self.db.execute('INSERT INTO sessions(session,pane,parent,owner_pid,owner_start) VALUES (?,?,?,?,?)',
+                                ('claimed', '2', '1', other.pid, started))
+            with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
+                    patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
+                    patch.object(tasklist, 'wezterm', return_value=json.dumps([
+                        {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}])) as call:
+                with self.assertRaisesRegex(ValueError, 'another live Codex'):
+                    tasklist.open_panel(self.db, self.root, 'claimed')
+                self.assertEqual(call.call_count, 1)
+            self.assertEqual(self.db.execute('SELECT owner_pid FROM sessions').fetchone()[0], other.pid)
+        finally:
+            other.terminate()
+            other.wait(timeout=3)
+
     @unittest.skipIf(os.name == 'nt', 'POSIX PTY integration; Windows console needs a real terminal')
     def test_live_panel_scroll_resize_and_update(self):
         for number in range(20):
