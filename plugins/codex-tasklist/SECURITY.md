@@ -2,7 +2,9 @@
 
 ## Reporting a vulnerability
 
-Please email **ille.martin@gmail.com** with the affected version, reproduction steps, and impact. Do not include credentials or private task data. Avoid publishing exploit details in a public issue before a fix is available.
+For ordinary bugs and feature requests, [open a GitHub issue](https://github.com/martinille/codex-tasklist/issues/new).
+
+For security vulnerabilities, use [Report a vulnerability](https://github.com/martinille/codex-tasklist/security/advisories/new) to contact the maintainer privately on GitHub. Include the affected version, reproduction steps, and impact. Do not include credentials or private task data. Avoid publishing exploit details in a public issue before a fix is available.
 
 Security fixes target the latest release. Update to the latest version before reporting a problem.
 
