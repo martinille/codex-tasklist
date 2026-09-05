@@ -68,6 +68,19 @@ class TasklistTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             tasklist.session_id('../wrong')
 
+    def test_malformed_hook_payload_reports_error_without_traceback(self):
+        payloads = [None, [], {'session_id': 'valid'}]
+        payloads += [{'session_id': 'valid', 'hook_event_name': event}
+                     for event in (None, 1, [], '', ' ')]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), '--data-dir', str(self.root), 'hook'],
+                    input=json.dumps(payload), text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 1)
+                self.assertTrue(result.stderr.startswith('Codex Tasklist: Hook payload'))
+                self.assertNotIn('Traceback', result.stderr)
+
     def test_open_is_idempotent_and_end_does_not_delete_tasks(self):
         parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
         responses = [json.dumps([parent]), '2', '', json.dumps([parent, {'pane_id': 2, 'tab_id': 4}])]
@@ -141,7 +154,8 @@ class TasklistTest(unittest.TestCase):
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 80, 0, 0))
         process = subprocess.Popen([sys.executable, str(SCRIPT), '--data-dir', str(self.root),
                                     '--session', 'panel', 'view', '--owner-pid', str(self.owner[0]),
-                                    '--owner-start', self.owner[1]], stdin=slave, stdout=slave, stderr=slave)
+                                    '--owner-start', self.owner[1]], stdin=slave, stdout=slave, stderr=slave,
+                                   env={key: value for key, value in os.environ.items() if key != 'WEZTERM_PANE'})
 
         def read_until(expected):
             result = b''

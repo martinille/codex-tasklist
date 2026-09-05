@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -232,8 +233,12 @@ def create_panel(db, directory, session, parent, identity, token):
 
 
 def hook(db, directory, payload):
+    if not isinstance(payload, dict):
+        raise ValueError('Hook payload must be a JSON object.')
+    event = payload.get('hook_event_name')
+    if not isinstance(event, str) or not event.strip():
+        raise ValueError('Hook payload requires a non-empty hook_event_name string.')
     session = session_id(payload.get('session_id'))
-    event = payload['hook_event_name']
     warning = None
     if event == 'SessionEnd':
         identity = process_owner.discover()
@@ -254,7 +259,7 @@ def hook(db, directory, payload):
         return {}
     try:
         open_panel(db, directory, session)
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as error:
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
         warning = ('Codex Tasklist panel unavailable. Start a fresh Codex CLI session in WezTerm '
                    'and check that its process and terminal are accessible. Task storage remains available.')
     arguments = [sys.executable, str(SCRIPT), '--data-dir', str(directory), '--session', session]
@@ -428,7 +433,7 @@ def main():
     args = parser.parse_args()
     try:
         directory = args.data_dir.expanduser().resolve()
-        with connect(directory) as db:
+        with closing(connect(directory)) as db, db:
             if args.command == 'hook':
                 print(json.dumps(hook(db, directory, json.load(sys.stdin))))
                 return
