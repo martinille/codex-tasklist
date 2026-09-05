@@ -8,7 +8,7 @@ A live task list below Codex CLI in **WezTerm**. Python 3.10+, no extra packages
 
 ## Demo
 
-[![Watch Codex Tasklist in a real WezTerm session](docs/tasklist-demo.png)](docs/tasklist-demo.mp4)
+https://github.com/user-attachments/assets/38b5e887-e444-4f12-92d4-641a7629fbf5
 
 **[Watch the 59-second demo (MP4)](docs/tasklist-demo.mp4)** — type requests naturally; Codex creates tasks and matches follow-ups to existing ones. Includes seven tasks, scrolling, and the full status line.
 
