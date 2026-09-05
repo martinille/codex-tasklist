@@ -34,8 +34,8 @@ Review and trust the plugin hooks in `/hooks`, then start a new Codex session in
 
 | Environment | Verified |
 | --- | --- |
-| Linux | Five tests, including live panel scrolling, resizing and updates |
-| Windows + WezTerm | Four tests; real Codex session opened the panel and created/completed a task; keyboard scrolling and styling checked |
+| Linux | Queue, ownership, concurrent creation, recovery and packaged CLI tests; live PTY scrolling, resizing and updates |
+| Windows + WezTerm | Earlier version: real Codex session, task updates, keyboard scrolling and styling; current native process lookup checked |
 | Bash / PowerShell without WezTerm | Queue commands and hook output only |
 | macOS | Not yet tested on a real machine |
 

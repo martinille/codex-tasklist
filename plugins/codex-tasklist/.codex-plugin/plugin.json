@@ -1,6 +1,6 @@
 {
   "name": "codex-tasklist",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent per-session user-request queue for Codex CLI in WezTerm",
   "author": {
     "name": "Martin Ille"
