@@ -18,6 +18,7 @@ if os.name != 'nt':
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'plugins/codex-tasklist/scripts/tasklist.py'
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location('tasklist', SCRIPT)
 tasklist = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tasklist)
@@ -28,8 +29,12 @@ class TasklistTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.db = tasklist.connect(self.root)
+        self.owner = (os.getpid(), tasklist.process_owner.process(os.getpid())[1])
+        self.discovery = patch.object(tasklist.process_owner, 'discover', return_value=self.owner)
+        self.discovery.start()
 
     def tearDown(self):
+        self.discovery.stop()
         self.db.close()
         self.temp.cleanup()
 
@@ -84,10 +89,14 @@ class TasklistTest(unittest.TestCase):
     def test_live_panel_scroll_resize_and_update(self):
         for number in range(20):
             tasklist.add(self.db, 'panel', f'Request {number + 1}', 'pending')
+        with self.db:
+            self.db.execute('INSERT INTO sessions(session,owner_pid,owner_start) VALUES (?,?,?)',
+                            ('panel', *self.owner))
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 80, 0, 0))
         process = subprocess.Popen([sys.executable, str(SCRIPT), '--data-dir', str(self.root),
-                                    '--session', 'panel', 'view'], stdin=slave, stdout=slave, stderr=slave)
+                                    '--session', 'panel', 'view', '--owner-pid', str(self.owner[0]),
+                                    '--owner-start', self.owner[1]], stdin=slave, stdout=slave, stderr=slave)
 
         def read_until(expected):
             result = b''

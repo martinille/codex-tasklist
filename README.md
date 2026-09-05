@@ -39,7 +39,8 @@ Review and trust the plugin hooks in `/hooks`, then start a new Codex session in
 | Bash / PowerShell without WezTerm | Queue commands and hook output only |
 | macOS | Not yet tested on a real machine |
 
-- Session-end cleanup is implemented and unit-tested; actual Codex exit/resume cleanup still needs an end-to-end check. Unexpected termination with the parent shell left open is not covered.
+- Panels require a live Codex CLI owner and close when it exits, including abrupt termination, or when the session moves to another owner or pane. Linux process tests cover these paths and preserve saved tasks; real Codex exit/resume integration still needs checking.
+- Ownership is detected through the nearest Codex CLI ancestor of its hook. Desktop app-server sessions are outside this support contract. Windows process lookup was checked in a VM; full lifetime tests on Windows and macOS remain outstanding.
 - Windows mouse scrolling and runtime pane resizing still need verification.
 - The Windows VirtualBox test had low contrast and WezTerm graphics warnings; these remain unresolved.
 - Packaging checked with Codex 0.153.4; Windows integration with 0.146.0.
