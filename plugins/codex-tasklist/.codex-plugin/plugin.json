@@ -1,0 +1,18 @@
+{
+  "name": "codex-tasklist",
+  "version": "1.0.0",
+  "description": "Persistent per-session user-request queue for Codex CLI in WezTerm",
+  "author": {
+    "name": "Martin Ille"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Tasklist",
+    "shortDescription": "A persistent task queue below Codex in WezTerm.",
+    "longDescription": "Track user requests with stable IDs, live statuses, scrolling and adjustable panel height. Opens automatically in WezTerm. Local storage; no patched Codex binary.",
+    "developerName": "Martin Ille",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Show and maintain the task list for this session."
+  }
+}

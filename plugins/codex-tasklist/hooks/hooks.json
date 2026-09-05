@@ -1,0 +1,52 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/tasklist.py\" hook",
+            "timeout": 10,
+            "commandWindows": "powershell.exe -NoProfile -Command \"& python -X utf8 (Join-Path $env:PLUGIN_ROOT 'scripts/tasklist.py') hook; exit $LASTEXITCODE\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/tasklist.py\" hook",
+            "timeout": 10,
+            "commandWindows": "powershell.exe -NoProfile -Command \"& python -X utf8 (Join-Path $env:PLUGIN_ROOT 'scripts/tasklist.py') hook; exit $LASTEXITCODE\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/tasklist.py\" hook",
+            "timeout": 5,
+            "commandWindows": "powershell.exe -NoProfile -Command \"& python -X utf8 (Join-Path $env:PLUGIN_ROOT 'scripts/tasklist.py') hook; exit $LASTEXITCODE\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/tasklist.py\" hook",
+            "timeout": 3,
+            "commandWindows": "powershell.exe -NoProfile -Command \"& python -X utf8 (Join-Path $env:PLUGIN_ROOT 'scripts/tasklist.py') hook; exit $LASTEXITCODE\""
+          }
+        ]
+      }
+    ]
+  }
+}
