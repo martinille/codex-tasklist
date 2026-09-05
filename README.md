@@ -19,16 +19,6 @@ Review and trust the plugin hooks in `/hooks`, then start a new Codex session in
 
 **Outside WezTerm:** queue commands work in Bash and PowerShell, but the automatic panel does not.
 
-## Just ask Codex
-
-> Fix the login redirect, then add keyboard navigation.
-
-> Show eight rows in the task list.
-
-> Task 4 is waiting for my decision.
-
-Titles follow the language of your session. Codex maintains the statuses; review them as you would any model output. Your sandbox settings may still require command approvals.
-
 ## Controls
 
 | Action | Control |
@@ -88,4 +78,6 @@ Source: `plugins/codex-tasklist/`. Marketplace: `.agents/plugins/marketplace.jso
 
 </details>
 
-**Martin Ille · 1.0.0** · No open-source license selected yet. Known validation gaps remain listed above.
+## License
+
+[MIT](LICENSE).
