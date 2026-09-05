@@ -6,6 +6,14 @@ A live task list below Codex CLI in **WezTerm**. Python 3.10+, no extra packages
 
 *Illustrative preview with sample tasks.* Active → pending → done. IDs stay fixed; each Codex session has its own saved queue.
 
+## Demo
+
+[![Watch Codex Tasklist in a real WezTerm session](docs/tasklist-demo.png)](docs/tasklist-demo.mp4)
+
+**[Watch the 59-second demo (MP4)](docs/tasklist-demo.mp4)** — type requests naturally; Codex creates tasks and matches follow-ups to existing ones. Includes seven tasks, scrolling, and the full status line.
+
+Real screen recording, time-compressed. The mouse indicator is a recording aid, not part of the plugin.
+
 ## Install
 
 Requires **Codex CLI**, **WezTerm**, and **Python 3.10+** (`python3` on Linux/macOS; `python` on Windows PATH).
