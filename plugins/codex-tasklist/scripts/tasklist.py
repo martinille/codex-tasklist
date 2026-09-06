@@ -34,7 +34,8 @@ def terminal_input(fd):
         def read():
             return os.read(fd, 128) if select.select([fd], [], [], 0.25)[0] else None
 
-        return read, lambda: termios.tcsetattr(fd, termios.TCSADRAIN, original)
+        # Do not wait for a terminal consumer to drain output during shutdown.
+        return read, lambda: termios.tcsetattr(fd, termios.TCSANOW, original)
 
     import ctypes
     from ctypes import wintypes

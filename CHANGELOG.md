@@ -15,6 +15,7 @@
 - Preserve the caller's umask and Codex exit status through the launcher, including Ctrl-C through tmux.
 - Restore Ghostty's previous foreground terminal after splitting without activating a background application.
 - Add Linux/Windows/macOS CI coverage for Python 3.10 and 3.13; require tmux in Linux jobs before the plugin scanner runs.
+- Restore POSIX terminal input immediately on exit, avoiding a macOS PTY shutdown hang while output remains unread.
 
 ## 1.0.2 — 2026-09-06
 
