@@ -22,10 +22,18 @@ sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location('tasklist', SCRIPT)
 tasklist = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tasklist)
+TERMINAL_ENV = dict.fromkeys(('TMUX', 'STY', 'ZELLIJ', 'SSH_CONNECTION', 'SSH_TTY'), '')
+TERMINAL_ENV['TERM_PROGRAM'] = 'WezTerm'
 
 
 class TasklistTest(unittest.TestCase):
     def setUp(self):
+        ownership = patch.object(tasklist.terminals.Terminal, 'owns', return_value=True)
+        ownership.start()
+        self.addCleanup(ownership.stop)
+        environment = patch.dict(os.environ, TERMINAL_ENV)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.db = tasklist.connect(self.root)
@@ -72,21 +80,35 @@ class TasklistTest(unittest.TestCase):
         payloads = [None, [], {'session_id': 'valid'}]
         payloads += [{'session_id': 'valid', 'hook_event_name': event}
                      for event in (None, 1, [], '', ' ')]
+        payloads += [{'session_id': session, 'hook_event_name': 'SessionStart'}
+                     for session in (1, ['valid'], {'id': 'valid'}, True)]
         for payload in payloads:
             with self.subTest(payload=payload):
                 result = subprocess.run(
                     [sys.executable, str(SCRIPT), '--data-dir', str(self.root), 'hook'],
                     input=json.dumps(payload), text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 1)
-                self.assertTrue(result.stderr.startswith('Codex Tasklist: Hook payload'))
+                self.assertTrue(result.stderr.startswith('Codex Tasklist:'))
                 self.assertNotIn('Traceback', result.stderr)
+
+    def test_captured_unicode_list_without_utf8_environment(self):
+        tasklist.add(self.db, 'unicode', 'Živý test — 世界', 'done')
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('PYTHONUTF8', 'PYTHONIOENCODING')}
+        environment['PYTHONUTF8'] = '0'
+        environment['PYTHONIOENCODING'] = 'cp1250'
+        result = subprocess.run([sys.executable, str(SCRIPT), '--data-dir', str(self.root),
+                                 '--session', 'unicode', 'list'], env=environment,
+                                capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.decode('utf-8'))[0]['title'], 'Živý test — 世界')
 
     def test_open_is_idempotent_and_end_does_not_delete_tasks(self):
         parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
         responses = [json.dumps([parent]), '2', '', json.dumps([parent, {'pane_id': 2, 'tab_id': 4}])]
         with patch.dict(os.environ, {'WEZTERM_PANE': '1', 'WEZTERM_UNIX_SOCKET': 'test'}), \
-                patch.object(tasklist.shutil, 'which', return_value='/usr/bin/wezterm'), \
-                patch.object(tasklist, 'wezterm', side_effect=responses) as call:
+                patch.object(tasklist.terminals.shutil, 'which', return_value='/usr/bin/wezterm'), \
+                patch.object(tasklist.terminals.Terminal, 'command', side_effect=responses) as call:
             tasklist.open_panel(self.db, self.root, 'session')
             tasklist.open_panel(self.db, self.root, 'session')
             self.assertEqual(sum(args.args[0] == 'split-pane' for args in call.call_args_list), 1)
@@ -103,8 +125,8 @@ class TasklistTest(unittest.TestCase):
         responses = [json.dumps([parent]), subprocess.CalledProcessError(1, 'split-pane'),
                      json.dumps([parent]), '2', '']
         with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
-                patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
-                patch.object(tasklist, 'wezterm', side_effect=responses):
+                patch.object(tasklist.terminals.shutil, 'which', return_value='wezterm'), \
+                patch.object(tasklist.terminals.Terminal, 'command', side_effect=responses):
             with self.assertRaises(subprocess.CalledProcessError):
                 tasklist.open_panel(self.db, self.root, 'retry')
             self.assertEqual(self.db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 0)
@@ -116,8 +138,8 @@ class TasklistTest(unittest.TestCase):
         self.db.execute("CREATE TRIGGER reject_registration BEFORE UPDATE OF pane ON sessions "
                         "BEGIN SELECT RAISE(FAIL, 'test registration failure'); END")
         with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
-                patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
-                patch.object(tasklist, 'wezterm', side_effect=[json.dumps([parent, {'pane_id': 9}]), '2', '']) as call:
+                patch.object(tasklist.terminals.shutil, 'which', return_value='wezterm'), \
+                patch.object(tasklist.terminals.Terminal, 'command', side_effect=[json.dumps([parent, {'pane_id': 9}]), '2', '', '']) as call:
             with self.assertRaises(tasklist.sqlite3.IntegrityError):
                 tasklist.open_panel(self.db, self.root, 'registration')
         self.assertEqual([args.args for args in call.call_args_list if args.args[0] == 'kill-pane'],
@@ -132,8 +154,8 @@ class TasklistTest(unittest.TestCase):
                 self.db.execute('INSERT INTO sessions(session,pane,parent,owner_pid,owner_start) VALUES (?,?,?,?,?)',
                                 ('claimed', '2', '1', other.pid, started))
             with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
-                    patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
-                    patch.object(tasklist, 'wezterm', return_value=json.dumps([
+                    patch.object(tasklist.terminals.shutil, 'which', return_value='wezterm'), \
+                    patch.object(tasklist.terminals.Terminal, 'command', return_value=json.dumps([
                         {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}])) as call:
                 with self.assertRaisesRegex(ValueError, 'another live Codex'):
                     tasklist.open_panel(self.db, self.root, 'claimed')

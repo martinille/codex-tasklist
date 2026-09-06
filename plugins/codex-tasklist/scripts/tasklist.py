@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import select
 import shlex
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -15,6 +14,8 @@ import time
 import unicodedata
 import uuid
 import process_owner
+import terminals
+import launcher
 
 if os.name != 'nt':
     import termios
@@ -92,7 +93,8 @@ def connect(directory):
     with db:
         db.execute('BEGIN IMMEDIATE')
         columns = {row['name'] for row in db.execute('PRAGMA table_info(sessions)')}
-        for name, kind in [('owner_pid', 'INTEGER'), ('owner_start', 'TEXT')]:
+        for name, kind in [('owner_pid', 'INTEGER'), ('owner_start', 'TEXT'),
+                           ('backend', "TEXT NOT NULL DEFAULT 'wezterm'"), ('panel_token', 'TEXT')]:
             if name not in columns:
                 db.execute(f'ALTER TABLE sessions ADD COLUMN {name} {kind}')
     return db
@@ -106,7 +108,7 @@ def title(value):
 
 
 def session_id(value):
-    if not value or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value):
         raise ValueError('A valid --session or CODEX_THREAD_ID is required.')
     return value
 
@@ -146,18 +148,19 @@ def row_count(db):
     return row[0] if row else 5
 
 
-def wezterm(*args):
-    return subprocess.run(['wezterm', 'cli', *map(str, args)], check=True,
-                          capture_output=True, text=True, timeout=3).stdout.strip()
+def panel_setup():
+    return ('On native Windows, run codex directly in WezTerm for a panel, or use WSL with tmux.'
+            if os.name == 'nt' else
+            'Start a fresh Codex CLI session with codex-tasklist for automatic terminal setup.')
 
 
 def open_panel(db, directory, session):
-    parent = os.environ.get('WEZTERM_PANE', '')
-    if not parent.isdigit() or not shutil.which('wezterm'):
-        return
+    terminal = terminals.detect()
+    if terminal is None:
+        raise ValueError('No automatic panel is available in this terminal. ' + panel_setup())
     identity = process_owner.discover()
     if identity is None or not process_owner.alive(identity):
-        raise ValueError('Start Codex CLI in WezTerm to open its task panel; no live Codex owner was found.')
+        raise ValueError('Start Codex CLI to open its task panel; no live Codex owner was found.')
     started = process_owner.process(os.getpid())
     if started is None:
         raise ValueError('The panel creator process is unavailable. Retry in a fresh Codex session.')
@@ -178,26 +181,29 @@ def open_panel(db, directory, session):
             raise ValueError('A task panel is already opening. Retry on the next prompt.')
         time.sleep(0.05)
     try:
-        create_panel(db, directory, session, parent, identity, token)
+        create_panel(db, directory, session, terminal, identity, token)
     finally:
         with db:
             db.execute('DELETE FROM panel_openers WHERE session=? AND token=?', (session, token))
 
 
-def create_panel(db, directory, session, parent, identity, token):
+def create_panel(db, directory, session, terminal, identity, token):
     if not process_owner.alive(identity):
         return
-    panes = json.loads(wezterm('list', '--format', 'json'))
-    owner = next((pane for pane in panes if str(pane['pane_id']) == parent), None)
+    parent, socket = terminal.parent, terminal.socket
+    panes = terminal.panes()
+    owner = terminal.owner(panes)
     if owner is None:
-        return
-    socket = os.environ.get('WEZTERM_UNIX_SOCKET', '')
+        raise ValueError('The original terminal pane is unavailable.')
+    if not terminal.ready(owner):
+        raise ValueError('This terminal layout cannot host a task panel. ' + panel_setup())
     existing = db.execute('SELECT * FROM sessions WHERE session=?', (session,)).fetchone()
     if (existing and not existing['closed'] and existing['owner_pid'] and
             (existing['owner_pid'], existing['owner_start']) != identity and
             process_owner.alive((existing['owner_pid'], existing['owner_start']))):
         raise ValueError('This session already belongs to another live Codex process. Close it before resuming here.')
-    if (existing and existing['parent'] == parent and existing['socket'] == socket and
+    if (existing and existing['backend'] == terminal.kind and
+            existing['parent'] == parent and existing['socket'] == socket and
             (existing['owner_pid'], existing['owner_start']) == identity):
         if any(str(pane['pane_id']) == existing['pane'] and
                pane['tab_id'] == owner['tab_id'] for pane in panes):
@@ -208,28 +214,29 @@ def create_panel(db, directory, session, parent, identity, token):
         return
     height = min(row_count(db), max(1, owner['size']['rows'] // 3))
     with db:
-        db.execute('INSERT INTO sessions(session,closed,owner_pid,owner_start,parent,socket) VALUES (?,0,?,?,?,?) '
+        db.execute('INSERT INTO sessions(session,closed,owner_pid,owner_start,parent,socket,backend) VALUES (?,0,?,?,?,?,?) '
                    'ON CONFLICT(session) DO UPDATE SET closed=0,owner_pid=excluded.owner_pid, '
-                   'owner_start=excluded.owner_start,parent=excluded.parent,socket=excluded.socket',
-                   (session, *identity, parent, socket))
-    pane = wezterm('split-pane', '--pane-id', parent, '--bottom', '--cells', height,
-                   '--', sys.executable, SCRIPT, '--data-dir', directory,
+                   'owner_start=excluded.owner_start,parent=excluded.parent,socket=excluded.socket,backend=excluded.backend',
+                   (session, *identity, parent, socket, terminal.kind))
+    pane = terminal.split(owner, height, [sys.executable, SCRIPT, '--data-dir', directory,
                    '--session', session, 'view', '--parent', parent,
-                   '--owner-pid', identity[0], '--owner-start', identity[1], '--opening-token', token)
+                   '--owner-pid', identity[0], '--owner-start', identity[1], '--opening-token', token])
     try:
         with db:
-            saved = db.execute('UPDATE sessions SET pane=?,parent=?,socket=? WHERE session=? AND owner_pid=? AND owner_start=?',
-                               (pane, parent, socket, session, *identity))
+            if not terminal.valid_id(pane) or pane in {str(item['pane_id']) for item in panes}:
+                raise ValueError('The terminal did not return a new panel ID.')
+            saved = db.execute('UPDATE sessions SET pane=?,parent=?,socket=?,panel_token=? '
+                               'WHERE session=? AND owner_pid=? AND owner_start=? AND closed=0',
+                               (pane, parent, socket, token, session, *identity))
             if not saved.rowcount:
                 raise sqlite3.IntegrityError('The session owner changed before its panel was registered.')
     except (sqlite3.Error, OSError):
-        if pane.isdigit() and pane not in {str(item['pane_id']) for item in panes}:
+        if pane and pane not in {str(item['pane_id']) for item in panes}:
             try:
-                wezterm('kill-pane', '--pane-id', pane)
+                terminal.close(pane)
             except (OSError, subprocess.SubprocessError):
                 pass
         raise
-    wezterm('activate-pane', '--pane-id', parent)
 
 
 def hook(db, directory, payload):
@@ -259,9 +266,10 @@ def hook(db, directory, payload):
         return {}
     try:
         open_panel(db, directory, session)
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
-        warning = ('Codex Tasklist panel unavailable. Start a fresh Codex CLI session in WezTerm '
-                   'and check that its process and terminal are accessible. Task storage remains available.')
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        if event == 'SessionStart':
+            warning = ('Codex Tasklist panel unavailable. ' + panel_setup() + ' Task storage remains available; '
+                       'use the list command below to inspect your tasks. See the plugin README for setup.')
     arguments = [sys.executable, str(SCRIPT), '--data-dir', str(directory), '--session', session]
     command = ('& ' + ' '.join("'" + arg.replace("'", "''") + "'" for arg in arguments)
                if os.name == 'nt' else shlex.join(arguments))
@@ -311,18 +319,20 @@ def clipped(text, cells):
 def view(db, session, parent, identity=None, opening_token=None):
     state = db.execute('SELECT * FROM sessions WHERE session=?', (session,)).fetchone()
     if not state or not state['owner_pid'] or not state['owner_start']:
-        raise ValueError('Start Codex CLI in WezTerm before opening its task panel.')
+        raise ValueError('Start Codex CLI before opening its task panel.')
     if identity is None:
         identity = process_owner.discover()
     if identity != (state['owner_pid'], state['owner_start']) or not process_owner.alive(identity):
         raise ValueError('This task panel has no matching live Codex owner. Start a fresh Codex CLI session.')
     parent = parent if parent is not None else state['parent']
     socket = state['socket']
-    pane = os.environ.get('WEZTERM_PANE')
+    backend = state['backend']
+    terminal = terminals.Terminal(backend, parent, socket)
+    pane = terminals.current_pane(backend)
     fd = sys.stdin.fileno()
     read_input, restore_input = terminal_input(fd)
     offset, pending, last_frame = 0, b'', None
-    last_rows = row_count(db)
+    last_rows = None if backend in ('ghostty', 'kitty') else row_count(db)
     keys = {b'\x1b[A': -1, b'k': -1, b'\x1b[B': 1, b'j': 1,
             b'\x1b[5~': -1, b'\x1b[6~': 1, b'\x1b[H': -10**9,
             b'\x1b[F': 10**9, b'g': -10**9, b'G': 10**9}
@@ -332,22 +342,25 @@ def view(db, session, parent, identity=None, opening_token=None):
         while True:
             state = db.execute('SELECT * FROM sessions WHERE session=?', (session,)).fetchone()
             if (not state or state['closed'] or (state['owner_pid'], state['owner_start']) != identity or
-                    state['parent'] != parent or state['socket'] != socket or not process_owner.alive(identity)):
+                    state['backend'] != backend or state['parent'] != parent or state['socket'] != socket or
+                    not process_owner.alive(identity)):
                 return
-            if pane and state['pane'] != pane:
+            if ((opening_token and state['panel_token'] != opening_token) or
+                    (pane and state['pane'] != pane)):
                 opening = db.execute('SELECT * FROM panel_openers WHERE session=?', (session,)).fetchone()
                 if (not opening or opening['token'] != opening_token or
                         not process_owner.alive((opening['pid'], opening['started']))):
                     return
+            if backend == 'ghostty' and opening_token and state['panel_token'] == opening_token:
+                pane = state['pane']
             width, height = os.get_terminal_size(sys.stdout.fileno())
             requested = row_count(db)
-            if requested != last_rows:
+            if requested != last_rows and (backend != 'ghostty' or pane):
                 last_rows = requested
                 difference = requested - height
-                if difference and os.environ.get('WEZTERM_PANE'):
+                if difference and pane:
                     try:
-                        wezterm('adjust-pane-size', '--pane-id', os.environ['WEZTERM_PANE'],
-                                '--amount', abs(difference), 'Up' if difference > 0 else 'Down')
+                        terminal.resize(pane, requested, difference)
                     except (OSError, subprocess.SubprocessError):
                         pass
             entries = tasks(db, session)
@@ -407,7 +420,10 @@ def view(db, session, parent, identity=None, opening_token=None):
 
 
 def main():
-    os.umask(0o077)
+    # Captured Windows tool output uses a legacy code page unless set explicitly.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description='Codex Tasklist: per-session user-request queue.')
     default_data = os.environ.get('PLUGIN_DATA') or str(Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'codex-tasklist')
     parser.add_argument('--data-dir', type=Path, default=Path(default_data))
@@ -423,6 +439,10 @@ def main():
     sub.add_parser('list')
     sub.add_parser('hook')
     sub.add_parser('open')
+    launch = sub.add_parser('start', help='Start Codex with automatic panel setup on Linux/macOS/WSL.')
+    launch.add_argument('arguments', nargs=argparse.REMAINDER, help='Arguments forwarded to Codex after --.')
+    install = sub.add_parser('install-launcher', help='Install the optional Linux/macOS/WSL codex-tasklist command.')
+    install.add_argument('--bin-dir', type=Path)
     panel = sub.add_parser('view')
     panel.add_argument('--parent')
     panel.add_argument('--owner-pid', type=int, help=argparse.SUPPRESS)
@@ -433,6 +453,15 @@ def main():
     args = parser.parse_args()
     try:
         directory = args.data_dir.expanduser().resolve()
+        if args.command == 'start':
+            return launcher.start(args.arguments)
+        os.umask(0o077)
+        if args.command == 'install-launcher':
+            path = launcher.install(SCRIPT, directory, args.bin_dir)
+            print(f'Installed {path}\nRun codex-tasklist instead of codex. All Codex arguments are forwarded.')
+            if str(path.parent) not in os.environ.get('PATH', '').split(os.pathsep):
+                print(f'Add {path.parent} to PATH, or run the full path above.')
+            return
         with closing(connect(directory)) as db, db:
             if args.command == 'hook':
                 print(json.dumps(hook(db, directory, json.load(sys.stdin))))

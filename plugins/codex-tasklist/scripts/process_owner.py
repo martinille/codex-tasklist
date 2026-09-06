@@ -109,3 +109,40 @@ def discover():
 def alive(owner):
     details = process(owner[0])
     return details is not None and details[1] == owner[1]
+
+
+def terminal_tty(pid):
+    """Controlling terminal, even when the hook's stdin/stdout are pipes."""
+    try:
+        if sys.platform.startswith('linux'):
+            value = int((Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()[4])
+            return str(value & 0xffffffff) if value else ''
+        if sys.platform == 'darwin':
+            value = subprocess.run(['ps', '-p', str(pid), '-o', 'tty='], check=True,
+                                   capture_output=True, text=True, timeout=0.25).stdout.strip()
+            return '/dev/' + value if value.startswith('ttys') else ''
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        pass
+    return ''
+
+
+def in_windows_wezterm():
+    # Only traverse known CLI wrappers; another terminal/app must not inherit ownership.
+    wrappers = {'python.exe', 'python3.exe', 'py.exe', 'powershell.exe', 'pwsh.exe',
+                'cmd.exe', 'node.exe', 'codex.exe', 'codex-command-runner.exe',
+                'codex-code-mode-host.exe', 'conhost.exe'}
+    pid, seen = os.getpid(), set()
+    for _ in range(32):
+        if pid in seen:
+            break
+        seen.add(pid)
+        details = process(pid)
+        if details is None:
+            break
+        pid, _, name = details
+        name = name.lower()
+        if name in ('wezterm-gui.exe', 'wezterm-mux-server.exe'):
+            return True
+        if name not in wrappers:
+            break
+    return False

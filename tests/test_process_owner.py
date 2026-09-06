@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +11,29 @@ owner = tasklist.process_owner
 
 
 class ProcessOwnerTest(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX controlling terminal')
+    def test_controlling_tty_survives_captured_hook_output(self):
+        import pty
+        master, slave = pty.openpty()
+        code = '''import os,sys,fcntl,termios
+sys.path.insert(0,sys.argv[1])
+import process_owner
+os.setsid()
+fcntl.ioctl(0,termios.TIOCSCTTY,0)
+expected=str(os.stat(os.ttyname(0)).st_rdev) if sys.platform.startswith('linux') else os.ttyname(0)
+assert not sys.stdout.isatty()
+assert process_owner.terminal_tty(os.getpid()) == expected
+print('matched')
+'''
+        try:
+            result = subprocess.run([sys.executable, '-c', code, str(tasklist.SCRIPT.parent)],
+                                    stdin=slave, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), b'matched')
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def test_current_process_and_missing_or_reused_pid(self):
         details = owner.process(os.getpid())
         self.assertIsNotNone(details)

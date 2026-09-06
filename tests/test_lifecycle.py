@@ -12,7 +12,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from test_tasklist import SCRIPT, tasklist
+from test_tasklist import SCRIPT, TERMINAL_ENV, tasklist
 
 if os.name != 'nt':
     import fcntl
@@ -22,6 +22,14 @@ if os.name != 'nt':
 
 
 class LifecycleTest(unittest.TestCase):
+    def setUp(self):
+        ownership = patch.object(tasklist.terminals.Terminal, 'owns', return_value=True)
+        ownership.start()
+        self.addCleanup(ownership.stop)
+        environment = patch.dict(os.environ, TERMINAL_ENV)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_concurrent_opens_create_one_panel(self):
         parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
         panes = [parent]
@@ -63,10 +71,10 @@ class LifecycleTest(unittest.TestCase):
                     db.close()
 
             with patch.dict(os.environ, {'WEZTERM_PANE': '1', 'WEZTERM_UNIX_SOCKET': 'test'}), \
-                    patch.object(tasklist.shutil, 'which', return_value='/usr/bin/wezterm'), \
+                    patch.object(tasklist.terminals.shutil, 'which', return_value='/usr/bin/wezterm'), \
                     patch.object(tasklist.process_owner, 'discover', return_value=(
                         os.getpid(), tasklist.process_owner.process(os.getpid())[1])), \
-                    patch.object(tasklist, 'wezterm', side_effect=wezterm), \
+                    patch.object(tasklist.terminals.Terminal, 'command', side_effect=wezterm), \
                     ThreadPoolExecutor(max_workers=2) as executor:
                 first = executor.submit(open_panel, False)
                 second = executor.submit(open_panel, True)
@@ -169,6 +177,7 @@ class LifecycleTest(unittest.TestCase):
             try:
                 self.assertEqual(tasklist.tasks(db, 'resumed')[0]['title'], 'Retained')
                 self.assertIsNone(db.execute('SELECT owner_pid FROM sessions').fetchone()[0])
+                self.assertEqual(db.execute('SELECT backend FROM sessions').fetchone()[0], 'wezterm')
                 with db:
                     db.execute('UPDATE sessions SET owner_pid=20,owner_start=?', ('new',))
                 with patch.object(tasklist.process_owner, 'discover', return_value=(10, 'old')):
@@ -191,13 +200,14 @@ class LifecycleTest(unittest.TestCase):
             db = tasklist.connect(root)
             try:
                 with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
-                        patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
+                        patch.object(tasklist.terminals.shutil, 'which', return_value='wezterm'), \
                         patch.object(tasklist.process_owner, 'discover', return_value=None), \
-                        patch.object(tasklist, 'wezterm') as terminal:
+                        patch.object(tasklist.terminals.Terminal, 'command') as terminal:
                     with self.assertRaisesRegex(ValueError, 'no live Codex owner'):
                         tasklist.open_panel(db, root, 'ownerless')
                     result = tasklist.hook(db, root, {'session_id': 'ownerless', 'hook_event_name': 'SessionStart'})
-                    self.assertIn('Start a fresh Codex CLI', result['systemMessage'])
+                    self.assertIn('run codex directly' if os.name == 'nt' else 'Start a fresh Codex CLI',
+                                  result['systemMessage'])
                     terminal.assert_not_called()
                     with self.assertRaisesRegex(ValueError, 'Start Codex CLI'):
                         tasklist.view(db, 'ownerless', None)
@@ -218,7 +228,7 @@ sys.path.insert(0, sys.argv[1])
 import tasklist
 from pathlib import Path
 tasklist.process_owner.discover = lambda: (int(sys.argv[3]), sys.argv[4])
-tasklist.shutil.which = lambda name: 'wezterm'
+tasklist.terminals.shutil.which = lambda name: 'wezterm'
 os.environ['WEZTERM_PANE'] = '1'
 def wezterm(command, *args):
     if command == 'list':
@@ -227,7 +237,8 @@ def wezterm(command, *args):
         time.sleep(30)
         return '2'
     return ''
-tasklist.wezterm = wezterm
+tasklist.terminals.Terminal.command = lambda self, *args: wezterm(*args)
+tasklist.terminals.Terminal.owns = lambda self, pane: True
 db = tasklist.connect(Path(sys.argv[2]))
 tasklist.open_panel(db, Path(sys.argv[2]), 'crash')
 '''
@@ -251,8 +262,8 @@ tasklist.open_panel(db, Path(sys.argv[2]), 'crash')
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 1)
                 with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
                         patch.object(tasklist.process_owner, 'discover', return_value=identity), \
-                        patch.object(tasklist.shutil, 'which', return_value='wezterm'), \
-                        patch.object(tasklist, 'wezterm', side_effect=[json.dumps([
+                        patch.object(tasklist.terminals.shutil, 'which', return_value='wezterm'), \
+                        patch.object(tasklist.terminals.Terminal, 'command', side_effect=[json.dumps([
                             {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}]), '2', '']):
                     tasklist.open_panel(db, root, 'crash')
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 0)
