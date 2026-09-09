@@ -45,6 +45,14 @@ Final audit-fix run: Linux passed all 41 tests, including real tmux and PTY test
 
 The live setup and checks are retained locally under `/tmp/tasklist-v2-live`; Windows test files use `C:\Users\vboxuser\codex-tasklist-v2-live`. These paths are test artifacts, not dependencies of the plugin or public reproducibility guarantees.
 
+## Session-switch resize regression (2026-09-09)
+
+On Linux WezTerm `20260906-101927-d2f3f05b`, switching conversations within one Codex process left both task panels open. Dragging the outer divider of those nested splits produced overlapping pane geometry, reproduced in an isolated Xvfb instance without Codex or the task renderer.
+
+Panel creation now serializes both the session and the parent pane. It marks previous conversations belonging to the same owner and terminal closed, waits for their renderers to exit, then opens the current conversation's panel. Saved queues remain intact. A timeout leaves the new panel unopened instead of adding another split.
+
+Validation: 43 tests, 40 passed and 3 skipped because tmux is unavailable. Regression checks cover concurrent conversation switches, queue retention, closing timeouts and isolation from other owners and terminals. A live WezTerm test with the real renderer switched first → next → first and dragged the remaining divider to three heights: exactly two panes remained, with no overlap. The owner was a local test process; no model request was made. Temporary scripts and results are under `/tmp/tasklist-resize-check`. This fix has not been live-tested on Windows or macOS.
+
 Native iTerm2 and Ghostty have command/targeting tests but no real macOS test. WSL, Terminal.app, GNOME Terminal, Alacritty and VS Code have not individually completed the real Codex workflow in this run. No claim of universal terminal compatibility is made.
 
 ## Pre-release audit fixes

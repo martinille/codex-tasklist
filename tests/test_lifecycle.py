@@ -31,6 +31,12 @@ class LifecycleTest(unittest.TestCase):
         self.addCleanup(environment.stop)
 
     def test_concurrent_opens_create_one_panel(self):
+        self.check_concurrent_opens('parallel')
+
+    def test_concurrent_session_switch_replaces_panel_and_preserves_queues(self):
+        self.check_concurrent_opens('next')
+
+    def check_concurrent_opens(self, second_session):
         parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
         panes = [parent]
         first_split = threading.Event()
@@ -41,6 +47,10 @@ class LifecycleTest(unittest.TestCase):
         def wezterm(command, *args):
             if command == 'list':
                 with lock:
+                    with sqlite3.connect(root / 'tasks.sqlite3') as db:
+                        closed = {row[0] for row in db.execute('SELECT pane FROM sessions WHERE closed=1')}
+                    db.close()
+                    panes[:] = [pane for pane in panes if str(pane['pane_id']) not in closed]
                     return json.dumps(panes)
             if command == 'split-pane':
                 with lock:
@@ -59,14 +69,17 @@ class LifecycleTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            tasklist.connect(root).close()
+            with tasklist.connect(root) as db:
+                tasklist.add(db, 'parallel', 'First queue', 'done')
+                tasklist.add(db, 'next', 'Second queue', 'active')
+            db.close()
 
             def open_panel(wait):
                 db = tasklist.connect(root)
                 try:
                     if wait and not first_split.wait(3):
                         raise AssertionError('First opener never reached split-pane')
-                    tasklist.open_panel(db, root, 'parallel')
+                    tasklist.open_panel(db, root, second_session if wait else 'parallel')
                 finally:
                     db.close()
 
@@ -80,7 +93,16 @@ class LifecycleTest(unittest.TestCase):
                 second = executor.submit(open_panel, True)
                 first.result(timeout=15)
                 second.result(timeout=15)
-        self.assertEqual(len(splits), 1)
+            with tasklist.connect(root) as db:
+                self.assertEqual(tasklist.tasks(db, 'parallel')[0]['title'], 'First queue')
+                self.assertEqual(tasklist.tasks(db, 'next')[0]['title'], 'Second queue')
+                self.assertEqual(db.execute('SELECT session FROM sessions WHERE closed=0').fetchall()[0][0],
+                                 second_session)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM sessions WHERE closed=0').fetchone()[0], 1)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 0)
+            db.close()
+        self.assertEqual(len(panes), 2)
+        self.assertEqual(len(splits), 1 if second_session == 'parallel' else 2)
 
     @unittest.skipIf(os.name == 'nt', 'POSIX PTY integration; Windows needs a real console')
     def test_session_end_exits_view_and_preserves_tasks(self):
@@ -259,7 +281,7 @@ tasklist.open_panel(db, Path(sys.argv[2]), 'crash')
                 self.assertEqual(db.execute('SELECT closed FROM sessions').fetchone()[0], 1)
                 creator.kill()
                 creator.wait(timeout=3)
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 1)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM panel_openers').fetchone()[0], 2)
                 with patch.dict(os.environ, {'WEZTERM_PANE': '1'}), \
                         patch.object(tasklist.process_owner, 'discover', return_value=identity), \
                         patch.object(tasklist.terminals.shutil, 'which', return_value='wezterm'), \

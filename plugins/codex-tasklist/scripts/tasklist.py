@@ -166,16 +166,17 @@ def open_panel(db, directory, session):
     if started is None:
         raise ValueError('The panel creator process is unavailable. Retry in a fresh Codex session.')
     token = uuid.uuid4().hex
+    slots = (session, f'pane:{terminal.kind}:{terminal.socket}:{terminal.parent}')
     deadline = time.monotonic() + 2
     while True:
         with db:
             db.execute('BEGIN IMMEDIATE')
-            opening = db.execute('SELECT * FROM panel_openers WHERE session=?', (session,)).fetchone()
-            acquired = opening is None or not process_owner.alive((opening['pid'], opening['started']))
+            openings = db.execute('SELECT * FROM panel_openers WHERE session IN (?,?)', slots).fetchall()
+            acquired = all(not process_owner.alive((opening['pid'], opening['started'])) for opening in openings)
             if acquired:
-                db.execute('INSERT INTO panel_openers VALUES (?,?,?,?) ON CONFLICT(session) DO UPDATE SET '
+                db.executemany('INSERT INTO panel_openers VALUES (?,?,?,?) ON CONFLICT(session) DO UPDATE SET '
                            'pid=excluded.pid,started=excluded.started,token=excluded.token',
-                           (session, os.getpid(), started[1], token))
+                           [(slot, os.getpid(), started[1], token) for slot in slots])
         if acquired:
             break
         if time.monotonic() >= deadline:
@@ -185,7 +186,7 @@ def open_panel(db, directory, session):
         create_panel(db, directory, session, terminal, identity, token)
     finally:
         with db:
-            db.execute('DELETE FROM panel_openers WHERE session=? AND token=?', (session, token))
+            db.execute('DELETE FROM panel_openers WHERE session IN (?,?) AND token=?', (*slots, token))
 
 
 def create_panel(db, directory, session, terminal, identity, token):
@@ -203,6 +204,21 @@ def create_panel(db, directory, session, terminal, identity, token):
             (existing['owner_pid'], existing['owner_start']) != identity and
             process_owner.alive((existing['owner_pid'], existing['owner_start']))):
         raise ValueError('This session already belongs to another live Codex process. Close it before resuming here.')
+    with db:
+        previous = db.execute('SELECT session,pane FROM sessions WHERE session<>? AND backend=? '
+                              'AND parent=? AND socket=? AND owner_pid=? AND owner_start=?',
+                              (session, terminal.kind, parent, socket, *identity)).fetchall()
+        db.executemany('UPDATE sessions SET closed=1 WHERE session=?', [(row['session'],) for row in previous])
+    old_panes = {row['pane'] for row in previous if row['pane']}
+    deadline = time.monotonic() + 2
+    while old_panes.intersection(str(pane['pane_id']) for pane in panes):
+        if time.monotonic() >= deadline:
+            raise ValueError('The previous task panel is still closing. Retry on the next prompt.')
+        time.sleep(0.05)
+        panes = terminal.panes()
+        owner = terminal.owner(panes)
+        if owner is None:
+            raise ValueError('The original terminal pane is unavailable.')
     if (existing and existing['backend'] == terminal.kind and
             existing['parent'] == parent and existing['socket'] == socket and
             (existing['owner_pid'], existing['owner_start']) == identity):

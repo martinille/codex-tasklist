@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 — 2026-09-09
+
+- Keep one task panel when switching conversations within the same Codex process and terminal; previous queues remain saved.
+- Wait for the previous panel to close before opening its replacement, preventing nested task panels and the WezTerm overlap reproduced when dragging their divider.
+- Serialize panel creation by both conversation and parent pane so concurrent hooks cannot create duplicate panels. Preserve isolation from other Codex owners and terminals.
+- Add regression coverage for concurrent conversation switches, queue retention and close timeouts; verify repeated switching and mouse resizing with the real renderer in Linux WezTerm.
+
 ## 2.0.0 — 2026-09-06
 
 - Add tmux panels and native kitty, iTerm2 and compatible Ghostty macOS adapters alongside WezTerm.

@@ -133,6 +133,28 @@ class TasklistTest(unittest.TestCase):
             tasklist.open_panel(self.db, self.root, 'retry')
         self.assertEqual(self.db.execute('SELECT pane FROM sessions').fetchone()[0], '2')
 
+    def test_switch_waits_for_old_panel_without_closing_other_owners_or_terminals(self):
+        for session, backend, parent, socket, pid in [
+                ('previous', 'wezterm', '1', '', self.owner[0]),
+                ('other-owner', 'wezterm', '1', '', self.owner[0] + 1),
+                ('other-parent', 'wezterm', '3', '', self.owner[0]),
+                ('other-socket', 'wezterm', '1', 'other', self.owner[0]),
+                ('other-backend', 'kitty', '1', '', self.owner[0])]:
+            with self.db:
+                self.db.execute('INSERT INTO sessions(session,pane,backend,parent,socket,owner_pid,owner_start) '
+                                'VALUES (?,?,?,?,?,?,?)', (session, '2', backend, parent, socket, pid, self.owner[1]))
+        tasklist.add(self.db, 'previous', 'Keep saved queue', 'done')
+        terminal = tasklist.terminals.Terminal('wezterm', '1', '')
+        panes = [{'pane_id': 1, 'tab_id': 4, 'size': {'rows': 30}}, {'pane_id': 2, 'tab_id': 4}]
+        with patch.object(terminal, 'command', return_value=json.dumps(panes)) as command, \
+                patch.object(tasklist.time, 'monotonic', side_effect=[0, 3]):
+            with self.assertRaisesRegex(ValueError, 'previous task panel is still closing'):
+                tasklist.create_panel(self.db, self.root, 'next', terminal, self.owner, 'token')
+        command.assert_called_once_with('list', '--format', 'json')
+        self.assertEqual([row[0] for row in self.db.execute('SELECT session FROM sessions WHERE closed=1')],
+                         ['previous'])
+        self.assertEqual(tasklist.tasks(self.db, 'previous')[0]['title'], 'Keep saved queue')
+
     def test_registration_failure_closes_only_new_pane(self):
         parent = {'pane_id': 1, 'tab_id': 4, 'size': {'rows': 40}}
         self.db.execute("CREATE TRIGGER reject_registration BEFORE UPDATE OF pane ON sessions "
