@@ -176,6 +176,24 @@ class TerminalTest(unittest.TestCase):
                 db.close()
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('TASKLIST_TEST_ITERM2') == '1',
+                     'Set TASKLIST_TEST_ITERM2=1 inside iTerm2 for live AppleScript checks')
+class LiveItermTest(unittest.TestCase):
+    def test_panes_enumerates_the_current_session_and_its_tab(self):
+        terminal = terminals.detect()
+        self.assertIsNotNone(terminal)
+        self.assertEqual(terminal.kind, 'iterm2')
+        panes = terminal.panes()
+        owner = terminal.owner(panes)
+        self.assertIsNotNone(owner)
+        self.assertGreater(owner['size']['rows'], 0)
+        self.assertEqual(len({pane['pane_id'] for pane in panes}), len(panes))
+        for pane in panes:
+            self.assertTrue(terminal.valid_id(pane['pane_id']))
+            self.assertRegex(pane['tab_id'], r'^\d+:\d+$')
+        self.assertEqual(terminal.owner(terminal.panes())['tab_id'], owner['tab_id'])
+
+
 @unittest.skipIf(os.name == 'nt', 'Launcher is only for Linux/macOS/WSL')
 class LauncherTest(unittest.TestCase):
     def test_start_preserves_umask_and_queue_data_remains_private(self):
