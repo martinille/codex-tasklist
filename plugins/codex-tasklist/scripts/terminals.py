@@ -107,9 +107,10 @@ end tell''')
         output = self.command('''tell application "iTerm2"
 set resultText to ""
 repeat with w in windows
-repeat with t in tabs of w
+repeat with tabNumber from 1 to count of tabs of w
+set t to tab tabNumber of w
 repeat with s in sessions of t
-set resultText to resultText & (unique id of s) & (ASCII character 9) & (id of w as text) & ":" & (index of t as text) & (ASCII character 9) & (rows of s as text) & linefeed
+set resultText to resultText & (unique id of s) & (ASCII character 9) & (id of w as text) & ":" & (tabNumber as text) & (ASCII character 9) & (rows of s as text) & linefeed
 end repeat
 end repeat
 end repeat
