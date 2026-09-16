@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.2 — 2026-09-16
+
+- Enumerate iTerm2 tabs by position instead of reading each tab's `index`, which iTerm2 3.6.11 rejects with AppleScript error `-1700` and left the task panel unopened. Contributed by @jbmusso in #1.
+- Add an opt-in live iTerm2 regression test (`TASKLIST_TEST_ITERM2=1` inside iTerm2 on macOS).
+
 ## 2.0.1 — 2026-09-09
 
 - Keep one task panel when switching conversations within the same Codex process and terminal; previous queues remain saved.
