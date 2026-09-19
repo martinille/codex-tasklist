@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.3 — 2026-09-19
+
+- Open panels again under Codex 0.155+, where hooks run inside the shared `codex app-server --managed-daemon` instead of the interactive CLI. The hook now finds the session's interactive `codex` process (explicit `resume` ID, then the newest unbound CLI in the session directory), reads its environment and matches the terminal pane by controlling tty instead of inherited pane IDs. Sessions end by ID when no CLI ancestor exists. Native Windows panels still need the CLI ancestry and remain unavailable under the daemon.
+- Fix `attempt to write a readonly database` in workspace-write sessions: hooks and the panel now share a private temporary working database with the agent CLI, instead of requiring sandbox writes to `PLUGIN_DATA`.
+- Checkpoint the working database to `PLUGIN_DATA/runtime.sqlite3` on lifecycle hooks and after tools. Restore it after temporary-directory cleanup; migrate existing task IDs, statuses, sessions and panel settings without modifying the legacy database. Reject unsafe POSIX runtime directories; add migration, recovery, concurrency and read-only filesystem regression tests.
+- Reinstall the plugin, review the added `PostToolUse` hook, and restart Codex after upgrading. Explicit `--data-dir` commands still use exactly the supplied directory.
+
 ## 2.0.2 — 2026-09-16
 
 - Enumerate iTerm2 tabs by position instead of reading each tab's `index`, which iTerm2 3.6.11 rejects with AppleScript error `-1700` and left the task panel unopened. Contributed by @jbmusso in #1.

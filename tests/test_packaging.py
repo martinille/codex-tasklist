@@ -22,7 +22,7 @@ class PackagingTest(unittest.TestCase):
         self.assertEqual((ROOT / entry['source']['path']).resolve(), PLUGIN.resolve())
         manifest = json.loads((PLUGIN / '.codex-plugin/plugin.json').read_text())
         self.assertEqual(entry['name'], manifest['name'])
-        self.assertEqual(manifest['version'], '2.0.2')
+        self.assertEqual(manifest['version'], '2.0.3')
         self.assertTrue((PLUGIN / manifest['skills']).is_dir())
 
     def test_copied_plugin_runs_without_repository_imports(self):
@@ -40,6 +40,7 @@ class PackagingTest(unittest.TestCase):
             self.assertTrue((package / 'scripts/process_owner.py').is_file())
             self.assertTrue((package / 'scripts/terminals.py').is_file())
             self.assertTrue((package / 'scripts/launcher.py').is_file())
+            self.assertTrue((package / 'scripts/storage.py').is_file())
 
 
 if __name__ == '__main__':

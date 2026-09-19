@@ -1,6 +1,6 @@
 {
   "name": "codex-tasklist",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Persistent Codex CLI task queue with native terminal panels and automatic tmux setup",
   "repository": "https://github.com/martinille/codex-tasklist",
   "license": "MIT",
