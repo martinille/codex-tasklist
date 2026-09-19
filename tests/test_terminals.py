@@ -132,7 +132,7 @@ class TerminalTest(unittest.TestCase):
 
     def test_ghostty_targets_controlling_tty_not_front_window(self):
         with patch.dict(os.environ, {'TERM_PROGRAM': 'ghostty'}, clear=True), \
-                patch.object(terminals.sys, 'platform', 'darwin'), \
+                patch.object(terminals.sys, 'platform', 'darwin'), patch.object(terminals.os, 'name', 'posix'), \
                 patch.object(terminals.shutil, 'which', return_value='/usr/bin/osascript'), \
                 patch.object(terminals, 'run', return_value='ttys016'):
             terminal = terminals.detect()
