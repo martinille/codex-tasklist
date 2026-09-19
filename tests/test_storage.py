@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -44,7 +45,7 @@ class StorageTest(unittest.TestCase):
             result = subprocess.run(command + list(args), capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.hook('PostToolUse')
-        with sqlite3.connect(self.archive / 'runtime.sqlite3') as saved:
+        with closing(sqlite3.connect(self.archive / 'runtime.sqlite3')) as saved:
             self.assertEqual(saved.execute('SELECT id,title,status FROM tasks').fetchone(),
                              (1, 'Živá úloha 世界', 'active'))
         self.assertEqual(self.hook('Stop')['decision'], 'block')
@@ -53,24 +54,24 @@ class StorageTest(unittest.TestCase):
         self.hook('SessionEnd')
         shutil.rmtree(self.runtime)
         self.hook('SessionStart')
-        with tasklist.connect(self.runtime) as db:
+        with closing(tasklist.connect(self.runtime)) as db, db:
             self.assertEqual(tasklist.tasks(db, 'storage-test')[0]['status'], 'done')
             self.assertEqual(tasklist.row_count(db), 7)
 
     def test_legacy_migration_preserves_ids_and_all_sessions(self):
         shutil.rmtree(self.runtime)
-        with tasklist.connect(self.archive) as db:
+        with closing(tasklist.connect(self.archive)) as db, db:
             tasklist.add(db, 'first', 'Existing', 'done')
             tasklist.add(db, 'second', 'Other conversation', 'blocked')
         self.hook('SessionStart')
-        with tasklist.connect(self.runtime) as db:
+        with closing(tasklist.connect(self.runtime)) as db, db:
             self.assertEqual(tasklist.tasks(db, 'first')[0]['id'], 1)
             self.assertEqual(tasklist.tasks(db, 'second')[0]['status'], 'blocked')
             tasklist.update(db, 'first', 1, status='active')
         self.hook('UserPromptSubmit')
-        with tasklist.connect(self.runtime) as db:
+        with closing(tasklist.connect(self.runtime)) as db, db:
             self.assertEqual(tasklist.tasks(db, 'first')[0]['status'], 'active')
-        with tasklist.connect(self.archive) as db:
+        with closing(tasklist.connect(self.archive)) as db, db:
             self.assertEqual(tasklist.tasks(db, 'first')[0]['status'], 'done')
 
     def test_concurrent_hooks_and_queue_writes_share_one_database(self):
@@ -85,10 +86,10 @@ class StorageTest(unittest.TestCase):
         for process in processes:
             out, err = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, err)
-        with tasklist.connect(self.runtime) as db:
+        with closing(tasklist.connect(self.runtime)) as db, db:
             tasklist.add(db, 'parallel', 'Latest', 'done')
         self.hook('PostToolUse')
-        with sqlite3.connect(self.archive / 'runtime.sqlite3') as db:
+        with closing(sqlite3.connect(self.archive / 'runtime.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT title FROM tasks').fetchone()[0], 'Latest')
 
     @unittest.skipIf(os.name == 'nt', 'POSIX permissions and symlinks')
@@ -108,7 +109,7 @@ class StorageTest(unittest.TestCase):
 
     def test_failed_checkpoint_reports_error_without_false_success(self):
         self.hook('PostToolUse')
-        with tasklist.connect(self.runtime) as db, patch.object(storage.sqlite3, 'connect',
+        with closing(tasklist.connect(self.runtime)) as db, db, patch.object(storage.sqlite3, 'connect',
                                                                side_effect=sqlite3.OperationalError('disk full')):
             with self.assertRaisesRegex(sqlite3.OperationalError, 'disk full'):
                 storage.checkpoint(db, self.archive)
@@ -130,7 +131,7 @@ class StorageTest(unittest.TestCase):
                              capture_output=True, text=True, timeout=10)
         self.assertEqual(new.returncode, 0, new.stderr)
         self.hook('PostToolUse')
-        with sqlite3.connect(self.archive / 'runtime.sqlite3') as db:
+        with closing(sqlite3.connect(self.archive / 'runtime.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT title FROM tasks').fetchone()[0], 'Sandbox write')
 
 
