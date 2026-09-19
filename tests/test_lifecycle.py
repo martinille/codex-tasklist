@@ -29,6 +29,9 @@ class LifecycleTest(unittest.TestCase):
         environment = patch.dict(os.environ, TERMINAL_ENV)
         environment.start()
         self.addCleanup(environment.stop)
+        inherited = patch.object(tasklist.process_owner, 'environment', return_value=None)
+        inherited.start()
+        self.addCleanup(inherited.stop)
 
     def test_concurrent_opens_create_one_panel(self):
         self.check_concurrent_opens('parallel')
@@ -216,6 +219,37 @@ class LifecycleTest(unittest.TestCase):
             finally:
                 reopened.close()
 
+    def test_daemon_hooks_bind_and_end_sessions_without_process_ancestry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = tasklist.connect(root)
+            daemon = (1, 'daemon')
+            other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            try:
+                identity = (other.pid, tasklist.process_owner.process(other.pid)[1])
+                with db:
+                    db.execute('INSERT INTO sessions(session,owner_pid,owner_start) VALUES (?,?,?)', ('stale', *daemon))
+                    db.execute('INSERT INTO sessions(session,owner_pid,owner_start) VALUES (?,?,?)', ('busy', *identity))
+                with patch.object(tasklist.process_owner, 'discover', return_value=daemon), \
+                        patch.object(tasklist.process_owner, 'daemon', side_effect=lambda pid: pid == 1), \
+                        patch.object(tasklist.process_owner, 'client', return_value=identity) as client:
+                    self.assertEqual(tasklist.owner_of(db, 'stale', '/work'), identity)
+                    self.assertEqual(client.call_args.args, ('stale', '/work', {identity}))
+                    self.assertEqual(tasklist.owner_of(db, 'stale', '/work'), identity)
+                    client.assert_called_once()
+                    self.assertEqual(tasklist.owner_of(db, 'fresh', None), identity)
+                    self.assertEqual(client.call_args.args[2], {identity})
+                    tasklist.hook(db, root, {'session_id': 'busy', 'hook_event_name': 'SessionEnd'})
+                    self.assertEqual(db.execute("SELECT closed FROM sessions WHERE session='busy'").fetchone()[0], 1)
+                    client.return_value = None
+                    with self.assertRaisesRegex(ValueError, 'no live Codex owner'):
+                        tasklist.open_panel(db, root, 'orphan', '/work')
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 3)
+            finally:
+                other.terminate()
+                other.wait(timeout=3)
+                db.close()
+
     def test_ownerless_panel_is_refused_but_queue_works(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -250,6 +284,7 @@ sys.path.insert(0, sys.argv[1])
 import tasklist
 from pathlib import Path
 tasklist.process_owner.discover = lambda: (int(sys.argv[3]), sys.argv[4])
+tasklist.process_owner.environment = lambda pid: None
 tasklist.terminals.shutil.which = lambda name: 'wezterm'
 os.environ['WEZTERM_PANE'] = '1'
 def wezterm(command, *args):

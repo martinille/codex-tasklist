@@ -93,7 +93,7 @@ When already inside tmux, the plugin uses that session and needs no launcher. Ex
 | macOS native adapters | Command construction and targeting tests; not yet tested on a real machine |
 
 - Panels require a live Codex CLI owner and close when it exits, including abrupt termination, or when the session moves to another owner or pane. Real Codex exit/resume and forced termination preserve saved tasks on Linux and Windows.
-- Ownership is detected through the nearest Codex CLI ancestor of its hook. Desktop app-server sessions are outside this support contract. macOS lifetime tests remain outstanding.
+- Ownership is detected through the nearest Codex CLI ancestor of its hook. Under the shared `codex app-server --managed-daemon` (Codex 0.155+) hooks have no CLI ancestor, so the plugin binds the session to the interactive `codex` process instead: an explicit `resume` ID first, otherwise the newest unbound CLI in the session directory. The pane is matched by that process's controlling tty on Linux/macOS; on macOS the terminal kind comes from the daemon's environment, so the first terminal that started Codex is assumed. Native Windows has no tty and gets no panel under the daemon. Desktop app-server sessions are outside this support contract. macOS lifetime tests remain outstanding.
 - Concurrent panel creation is serialized per session without blocking queue writes during terminal calls. A dead creator's reservation is reclaimed on retry; an unregistered panel closes on its next ownership check after its renderer starts. A different live Codex owner must close before that session can be resumed elsewhere.
 - Native iTerm2 and Ghostty integrations need live terminal verification before being treated as fully verified. Unsupported API versions and denied automation fall back without deleting tasks.
 - iTerm2's AppleScript API is deprecated upstream. It avoids adding a Python SDK dependency; if it stops working, the launcher uses tmux when available.
@@ -130,7 +130,13 @@ python3 plugins/codex-tasklist/scripts/tasklist.py --session demo list
 
 Use numeric IDs (`1`, not `T01`). On Windows, use `python` instead of `python3`.
 
-Installed queues use `PLUGIN_DATA`; manual commands default to `$XDG_STATE_HOME/codex-tasklist` or `~/.local/state/codex-tasklist`. Use the hook's `--data-dir` to inspect an installed queue. SQLite protects concurrent updates; task titles reject terminal controls. The plugin does not upload queue data to GitHub.
+Installed hooks give the agent and panel one private working database under `/tmp` on Linux/macOS/WSL, or the user's temporary directory on Windows. This keeps queue writes inside the normal workspace-write sandbox without elevated permissions. Use the hook's exact `--data-dir` to inspect that live queue. Custom sandboxes must allow that temporary directory.
+
+Trusted hooks checkpoint it to `PLUGIN_DATA/runtime.sqlite3` after tools and on lifecycle events. If temporary files are cleaned, the next hook restores the last checkpoint, including IDs, completed tasks and panel settings. Existing `PLUGIN_DATA/tasks.sqlite3` is imported on first use and left intact. As with other checkpointed storage, a machine failure before the next successful hook can lose changes since the last checkpoint; abrupt Codex termination alone leaves the working database intact. Checkpoint failures are reported as hook errors.
+
+Manual commands without `--data-dir` still default to `PLUGIN_DATA`, `$XDG_STATE_HOME/codex-tasklist` or `~/.local/state/codex-tasklist`; explicit `--data-dir` always selects the supplied directory. SQLite protects concurrent updates; task titles reject terminal controls. The plugin does not upload queue data to GitHub.
+
+Version 2.0.3 adds a `PostToolUse` hook. Reinstall, review and trust the updated hooks in `/hooks`, then restart Codex so an older panel cannot keep reading the legacy database. The Linux read-only mount regression can also be run with `TASKLIST_TEST_SANDBOX=1 python3 -B -m unittest discover -s tests -p test_storage.py` when `bwrap` and user namespaces are available.
 
 Source: `plugins/codex-tasklist/`. Marketplace: `.agents/plugins/marketplace.json`. Reinstall after source changes and restart Codex to load updated hooks.
 

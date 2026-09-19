@@ -60,6 +60,42 @@ print('matched')
             self.assertIsNone(owner.discover())
             self.assertEqual(lookup.call_count, 32)
 
+    def test_daemon_hooks_bind_the_session_to_an_interactive_client(self):
+        def entry(pid, tty='pts', arguments=('codex',), cwd='/work'):
+            return {'identity': (pid, f'start{pid}'), 'order': pid, 'tty': tty, 'arguments': list(arguments), 'cwd': cwd}
+        found = [entry(1, arguments=('codex', 'app-server', '--managed-daemon'), tty=''),
+                 entry(2, arguments=('codex', 'exec', 'task')), entry(3, cwd='/other'),
+                 entry(4, arguments=('codex', 'resume', 'abc')), entry(5), entry(6, tty='')]
+        with patch.object(owner, 'clients', return_value=found):
+            self.assertEqual(owner.client('abc', '/work'), (4, 'start4'))
+            self.assertEqual(owner.client('other', '/work'), (5, 'start5'))
+            self.assertEqual(owner.client('other', '/work', exclude={(5, 'start5')}), (4, 'start4'))
+            self.assertEqual(owner.client('other', '/none'), (5, 'start5'))
+            self.assertEqual(owner.client('other', None, exclude={(4, 'start4'), (5, 'start5')}), (3, 'start3'))
+            self.assertIsNone(owner.client('other', None, exclude={(3, 'start3'), (4, 'start4'), (5, 'start5')}))
+        with patch.object(owner, 'arguments', return_value=['codex', 'app-server', '--listen', 'unix://']):
+            self.assertTrue(owner.daemon(1))
+        with patch.object(owner, 'arguments', return_value=['codex', 'resume', 'app-server']):
+            self.assertTrue(owner.daemon(1))
+        with patch.object(owner, 'arguments', return_value=['codex']):
+            self.assertFalse(owner.daemon(1))
+        self.assertFalse(owner.daemon(os.getpid()))
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Reads /proc')
+    def test_linux_client_listing_reports_tty_arguments_cwd_and_environment(self):
+        details = owner.process(os.getpid())
+        with patch.object(owner.Path, 'iterdir', return_value=[owner.Path('/proc') / str(os.getpid())]), \
+                patch.object(owner, 'process', return_value=(details[0], details[1], 'codex')), \
+                patch.object(owner.Path, 'read_text', return_value='codex\n'):
+            found = owner.clients()
+        self.assertEqual(found[0]['identity'], (os.getpid(), details[1]))
+        self.assertEqual(found[0]['cwd'], os.getcwd())
+        self.assertEqual(found[0]['arguments'], owner.arguments(os.getpid()))
+        self.assertIn('unittest', ' '.join(found[0]['arguments']))
+        self.assertEqual(found[0]['tty'], owner.terminal_tty(os.getpid()))
+        self.assertEqual(owner.environment(os.getpid()).get('PATH'), os.environ.get('PATH'))
+        self.assertIsNone(owner.environment(-1))
+
     def test_macos_metadata_and_lookup_failure(self):
         result = subprocess.CompletedProcess([], 0, ' 42 Sat Sep  5 20:00:00 2026 /Applications/Codex CLI/codex\n')
         with patch.object(owner.sys, 'platform', 'darwin'), patch.object(owner.subprocess, 'run', return_value=result) as run:

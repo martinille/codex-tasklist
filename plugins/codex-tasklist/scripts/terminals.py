@@ -14,43 +14,55 @@ def run(arguments):
                           text=True, encoding='utf-8', timeout=3).stdout.strip()
 
 
-def current_pane(kind):
+def current_pane(kind, environment=None):
     if kind == 'ghostty':
         return ''  # Ghostty renderers are identified by the launch token, not an inherited ID.
     variable = {'wezterm': 'WEZTERM_PANE', 'tmux': 'TMUX_PANE',
                 'kitty': 'KITTY_WINDOW_ID', 'iterm2': 'ITERM_SESSION_ID'}[kind]
-    value = os.environ.get(variable, '')
+    value = (os.environ if environment is None else environment).get(variable, '')
     return value.rsplit(':', 1)[-1] if kind == 'iterm2' else value
 
 
-def detect():
+def detect(environment=None, tty=None):
+    env = os.environ if environment is None else environment
+    if tty is None:
+        tty = process_owner.terminal_tty(os.getpid())
     # Inner multiplexers own the PTY. Never fall through to inherited outer IDs.
-    if os.environ.get('TMUX'):
-        if shutil.which('tmux') and re.fullmatch(r'%[0-9]+', current_pane('tmux')):
-            return Terminal('tmux', current_pane('tmux'), os.environ['TMUX'].rsplit(',', 2)[0])
+    if env.get('TMUX'):
+        if shutil.which('tmux') and re.fullmatch(r'%[0-9]+', current_pane('tmux', env)):
+            return Terminal('tmux', current_pane('tmux', env), env['TMUX'].rsplit(',', 2)[0], tty)
         return None
-    if any(os.environ.get(key) for key in ('STY', 'ZELLIJ', 'SSH_CONNECTION', 'SSH_TTY')):
+    if any(env.get(key) for key in ('STY', 'ZELLIJ', 'SSH_CONNECTION', 'SSH_TTY')):
         return None
-    program = os.environ.get('TERM_PROGRAM', '')
+    program = env.get('TERM_PROGRAM', '')
     # kitty sets TERM, but can inherit TERM_PROGRAM and outer terminal pane IDs.
-    if ((program in ('', 'kitty') or os.environ.get('TERM') == 'xterm-kitty') and current_pane('kitty').isdigit() and
-            shutil.which('kitten') and os.environ.get('KITTY_LISTEN_ON', '').startswith('unix:')):
-        return Terminal('kitty', current_pane('kitty'), os.environ['KITTY_LISTEN_ON'])
-    if program in ('', 'WezTerm') and current_pane('wezterm').isdigit() and shutil.which('wezterm'):
-        return Terminal('wezterm', current_pane('wezterm'), os.environ.get('WEZTERM_UNIX_SOCKET', ''))
+    if ((program in ('', 'kitty') or env.get('TERM') == 'xterm-kitty') and current_pane('kitty', env).isdigit() and
+            shutil.which('kitten') and env.get('KITTY_LISTEN_ON', '').startswith('unix:')):
+        return Terminal('kitty', current_pane('kitty', env), env['KITTY_LISTEN_ON'], tty)
+    if program in ('', 'WezTerm') and current_pane('wezterm', env).isdigit() and shutil.which('wezterm'):
+        return Terminal('wezterm', current_pane('wezterm', env), env.get('WEZTERM_UNIX_SOCKET', ''), tty)
     if (sys.platform == 'darwin' and program == 'iTerm.app' and
-            re.fullmatch(r'[A-Za-z0-9-]+', current_pane('iterm2')) and shutil.which('osascript')):
-        return Terminal('iterm2', current_pane('iterm2'), '')
+            re.fullmatch(r'[A-Za-z0-9-]+', current_pane('iterm2', env)) and shutil.which('osascript')):
+        return Terminal('iterm2', current_pane('iterm2', env), '', tty)
     if sys.platform == 'darwin' and program == 'ghostty' and shutil.which('osascript'):
-        device = run(['ps', '-p', os.getpid(), '-o', 'tty='])
-        if re.fullmatch(r'ttys[0-9]+', device):
-            return Terminal('ghostty', '/dev/' + device, '')
+        device = tty if tty.startswith('/dev/ttys') else ''
+        if not device:
+            device = run(['ps', '-p', os.getpid(), '-o', 'tty='])
+            device = '/dev/' + device if re.fullmatch(r'ttys[0-9]+', device) else ''
+        if device:
+            return Terminal('ghostty', device, '', tty or device)
     return None
 
 
+def locate(owner):
+    tty = process_owner.terminal_tty(owner[0])
+    environment = process_owner.environment(owner[0])
+    return (detect(environment, tty) if environment else None) or detect(None, tty)
+
+
 class Terminal:
-    def __init__(self, kind, parent, socket):
-        self.kind, self.parent, self.socket = kind, parent, socket
+    def __init__(self, kind, parent, socket, tty=''):
+        self.kind, self.parent, self.socket, self.tty = kind, parent, socket, tty
 
     def valid_id(self, pane):
         pattern = r'%[0-9]+' if self.kind == 'tmux' else (
@@ -70,9 +82,9 @@ class Terminal:
         if self.kind == 'wezterm':
             return json.loads(self.command('list', '--format', 'json'))
         if self.kind == 'tmux':
-            output = self.command('list-panes', '-a', '-F', '#{pane_id}\t#{window_id}\t#{pane_height}')
-            return [{'pane_id': pane, 'tab_id': tab, 'size': {'rows': int(rows)}}
-                    for pane, tab, rows in (line.split('\t') for line in output.splitlines())]
+            output = self.command('list-panes', '-a', '-F', '#{pane_id}\t#{window_id}\t#{pane_height}\t#{pane_tty}')
+            return [{'pane_id': pane, 'tab_id': tab, 'size': {'rows': int(rows)}, 'tty': tty}
+                    for pane, tab, rows, tty in (line.split('\t') for line in output.splitlines())]
         if self.kind == 'kitty':
             return [{'pane_id': pane['id'], 'tab_id': tab['id'], 'size': {'rows': pane['lines']},
                      'layout': tab['layout'], 'pid': pane.get('pid')}
@@ -110,14 +122,14 @@ repeat with w in windows
 repeat with tabNumber from 1 to count of tabs of w
 set t to tab tabNumber of w
 repeat with s in sessions of t
-set resultText to resultText & (unique id of s) & (ASCII character 9) & (id of w as text) & ":" & (tabNumber as text) & (ASCII character 9) & (rows of s as text) & linefeed
+set resultText to resultText & (unique id of s) & (ASCII character 9) & (id of w as text) & ":" & (tabNumber as text) & (ASCII character 9) & (rows of s as text) & (ASCII character 9) & (tty of s) & linefeed
 end repeat
 end repeat
 end repeat
 return resultText
 end tell''')
-        return [{'pane_id': pane, 'tab_id': tab, 'size': {'rows': int(rows)}}
-                for pane, tab, rows in (line.split('\t') for line in output.splitlines())]
+        return [{'pane_id': pane, 'tab_id': tab, 'size': {'rows': int(rows)}, 'tty': tty}
+                for pane, tab, rows, tty in (line.split('\t') for line in output.splitlines())]
 
     def ready(self, owner):
         return self.kind != 'kitty' or owner.get('layout') == 'splits'
@@ -125,26 +137,23 @@ end tell''')
     def owner(self, panes):
         key = 'tty' if self.kind == 'ghostty' else 'pane_id'
         pane = next((pane for pane in panes if str(pane.get(key, '')) == self.parent), None)
-        return pane if pane is not None and self.owns(pane) else None
+        if pane is None or not self.owns(pane):
+            pane = next((pane for pane in panes if self.owns(pane)), None) if self.tty else None
+        if pane is not None:
+            self.parent = str(pane[key])
+        return pane
 
     def owns(self, pane):
-        if self.kind not in ('wezterm', 'kitty'):
-            return True
         if os.name == 'nt':
             return self.kind == 'wezterm' and process_owner.in_windows_wezterm()
-        current = process_owner.terminal_tty(os.getpid())
-        if not current:
+        if not self.tty:
             return False
         if self.kind == 'kitty':
-            return bool(pane.get('pid')) and process_owner.terminal_tty(pane['pid']) == current
-        device = pane.get('tty_name')
+            return bool(pane.get('pid')) and process_owner.terminal_tty(pane['pid']) == self.tty
+        device = pane.get('tty_name' if self.kind == 'wezterm' else 'tty')
         if not isinstance(device, str) or not device.startswith('/dev/'):
             return False
-        try:
-            candidate = str(os.stat(device).st_rdev) if sys.platform.startswith('linux') else device
-            return candidate == current
-        except OSError:
-            return False
+        return process_owner.device(device) == self.tty
 
     def split(self, owner, height, arguments):
         if self.kind == 'wezterm':

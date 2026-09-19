@@ -4,6 +4,8 @@ A persistent per-session task queue for Codex CLI, with native terminal panels a
 
 Write requests normally: Codex creates tasks, matches follow-ups, and updates statuses. Each session keeps its own saved queue. The panel opens with a live Codex CLI session and closes when its owner exits. Queue commands remain available if the panel cannot open.
 
+Version 2.0.3 restores panels under the shared Codex app-server daemon (0.155+), where hooks no longer run inside the interactive CLI: the session is bound to its `codex` process and the pane is matched by controlling tty. It also fixes sandbox write failures. Hooks supply a private temporary working directory shared by the CLI and panel, and checkpoint it to `PLUGIN_DATA/runtime.sqlite3` after tools and lifecycle events. Existing queues are imported; the last checkpoint restores tasks after temporary-file cleanup. A machine failure before checkpointing can lose the latest changes. Use the hook's exact `--data-dir`; reinstall, trust the updated hooks and restart Codex after upgrading.
+
 WezTerm, kitty, iTerm2 and supported Ghostty macOS scripting APIs have native adapters. Other Linux/macOS terminals, including VS Code, use tmux. Windows Terminal uses WSL for panels; native PowerShell/cmd keeps queue commands. Real Codex integration has been tested with WezTerm on Linux/Windows, kitty on Linux and Konsole through tmux. Native macOS adapters still need live platform verification.
 
 On native Windows, run **`codex`** or **`codex resume`** directly. The plugin opens WezTerm panels automatically and keeps queue commands available in other terminals. No launcher or shell-policy changes are needed.

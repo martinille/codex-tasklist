@@ -16,6 +16,7 @@ import uuid
 import process_owner
 import terminals
 import launcher
+import storage
 
 if os.name != 'nt':
     import termios
@@ -155,13 +156,30 @@ def panel_setup():
             'Start a fresh Codex CLI session with codex-tasklist for automatic terminal setup.')
 
 
-def open_panel(db, directory, session):
-    terminal = terminals.detect()
-    if terminal is None:
-        raise ValueError('No automatic panel is available in this terminal. ' + panel_setup())
+def owner_of(db, session, cwd):
     identity = process_owner.discover()
+    if identity is None or not process_owner.daemon(identity[0]):
+        return identity
+    stored = db.execute('SELECT owner_pid,owner_start FROM sessions WHERE session=?', (session,)).fetchone()
+    if stored and stored['owner_pid'] and process_owner.alive(tuple(stored)) and not process_owner.daemon(stored['owner_pid']):
+        return tuple(stored)
+    bound = {tuple(row) for row in db.execute(
+        'SELECT owner_pid,owner_start FROM sessions WHERE session<>? AND closed=0 AND owner_pid IS NOT NULL', (session,))}
+    identity = process_owner.client(session, cwd, bound)
+    if identity:
+        with db:
+            db.execute('INSERT INTO sessions(session,owner_pid,owner_start) VALUES (?,?,?) ON CONFLICT(session) '
+                       'DO UPDATE SET owner_pid=excluded.owner_pid,owner_start=excluded.owner_start', (session, *identity))
+    return identity
+
+
+def open_panel(db, directory, session, cwd=None):
+    identity = owner_of(db, session, cwd)
     if identity is None or not process_owner.alive(identity):
         raise ValueError('Start Codex CLI to open its task panel; no live Codex owner was found.')
+    terminal = terminals.locate(identity)
+    if terminal is None:
+        raise ValueError('No automatic panel is available in this terminal. ' + panel_setup())
     started = process_owner.process(os.getpid())
     if started is None:
         raise ValueError('The panel creator process is unavailable. Retry in a fresh Codex session.')
@@ -192,17 +210,18 @@ def open_panel(db, directory, session):
 def create_panel(db, directory, session, terminal, identity, token):
     if not process_owner.alive(identity):
         return
-    parent, socket = terminal.parent, terminal.socket
     panes = terminal.panes()
     owner = terminal.owner(panes)
     if owner is None:
         raise ValueError('The original terminal pane is unavailable.')
     if not terminal.ready(owner):
         raise ValueError('This terminal layout cannot host a task panel. ' + panel_setup())
+    parent, socket = terminal.parent, terminal.socket
     existing = db.execute('SELECT * FROM sessions WHERE session=?', (session,)).fetchone()
     if (existing and not existing['closed'] and existing['owner_pid'] and
             (existing['owner_pid'], existing['owner_start']) != identity and
-            process_owner.alive((existing['owner_pid'], existing['owner_start']))):
+            process_owner.alive((existing['owner_pid'], existing['owner_start'])) and
+            not process_owner.daemon(existing['owner_pid'])):
         raise ValueError('This session already belongs to another live Codex process. Close it before resuming here.')
     with db:
         previous = db.execute('SELECT session,pane FROM sessions WHERE session<>? AND backend=? '
@@ -266,10 +285,12 @@ def hook(db, directory, payload):
     warning = None
     if event == 'SessionEnd':
         identity = process_owner.discover()
-        if identity:
-            with db:
+        with db:
+            if identity and not process_owner.daemon(identity[0]):
                 db.execute('UPDATE sessions SET closed=1 WHERE session=? AND owner_pid=? AND owner_start=?',
                            (session, *identity))
+            else:
+                db.execute('UPDATE sessions SET closed=1 WHERE session=?', (session,))
         return {}
     if event == 'Stop':
         active = [item for item in tasks(db, session) if item['status'] == 'active']
@@ -282,7 +303,7 @@ def hook(db, directory, payload):
     if event not in ('SessionStart', 'UserPromptSubmit'):
         return {}
     try:
-        open_panel(db, directory, session)
+        open_panel(db, directory, session, payload.get('cwd'))
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         if event == 'SessionStart':
             warning = ('Codex Tasklist panel unavailable. ' + panel_setup() + ' Task storage remains available; '
@@ -443,7 +464,7 @@ def main():
             stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description='Codex Tasklist: per-session user-request queue.')
     default_data = os.environ.get('PLUGIN_DATA') or str(Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'codex-tasklist')
-    parser.add_argument('--data-dir', type=Path, default=Path(default_data))
+    parser.add_argument('--data-dir', type=Path)
     parser.add_argument('--session', default=os.environ.get('CODEX_THREAD_ID'))
     sub = parser.add_subparsers(dest='command', required=True)
     create = sub.add_parser('add')
@@ -469,7 +490,7 @@ def main():
     rows.add_argument('count', type=int)
     args = parser.parse_args()
     try:
-        directory = args.data_dir.expanduser().resolve()
+        directory = (args.data_dir or Path(default_data)).expanduser().resolve()
         if args.command == 'start':
             return launcher.start(args.arguments)
         os.umask(0o077)
@@ -479,9 +500,16 @@ def main():
             if str(path.parent) not in os.environ.get('PATH', '').split(os.pathsep):
                 print(f'Add {path.parent} to PATH, or run the full path above.')
             return
+        archive = directory if args.command == 'hook' and args.data_dir is None else None
+        if archive is not None:
+            directory = storage.working_directory(archive)
         with closing(connect(directory)) as db, db:
             if args.command == 'hook':
-                print(json.dumps(hook(db, directory, json.load(sys.stdin))))
+                result = hook(db, directory, json.load(sys.stdin))
+                if archive is not None:
+                    db.commit()
+                    storage.checkpoint(db, archive)
+                print(json.dumps(result))
                 return
             if args.command == 'rows':
                 if not 1 <= args.count <= 40:
@@ -496,7 +524,7 @@ def main():
             elif args.command == 'list':
                 print(json.dumps(tasks(db, session), ensure_ascii=False))
             elif args.command == 'open':
-                open_panel(db, directory, session)
+                open_panel(db, directory, session, os.getcwd())
             elif args.command == 'view':
                 identity = (args.owner_pid, args.owner_start) if args.owner_pid and args.owner_start else None
                 view(db, session, args.parent, identity, args.opening_token)

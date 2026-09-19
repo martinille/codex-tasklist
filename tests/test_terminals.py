@@ -53,8 +53,8 @@ class TerminalTest(unittest.TestCase):
     def test_tmux_preserves_literal_arguments_and_targets_correct_pane(self):
         terminal = terminals.Terminal('tmux', '%3', '/tmp/socket with spaces')
         arguments = ['/python with spaces', '/task.py', 'title $(touch BAD); "quoted"']
-        owner = {'pane_id': '%3', 'tab_id': '@1', 'size': {'rows': 30}}
-        with patch.object(terminals, 'run', side_effect=['%3\t@1\t30', '%4', '', '']) as run:
+        owner = {'pane_id': '%3', 'tab_id': '@1', 'size': {'rows': 30}, 'tty': '/dev/pts/1'}
+        with patch.object(terminals, 'run', side_effect=['%3\t@1\t30\t/dev/pts/1', '%4', '', '']) as run:
             self.assertEqual(terminal.panes(), [owner])
             self.assertEqual(terminal.split(owner, 5, arguments), '%4')
             terminal.resize('%4', 8, 3)
@@ -99,19 +99,18 @@ class TerminalTest(unittest.TestCase):
                                   'end try\nreturn id of child', command[2])
 
     def test_stale_native_ids_cannot_claim_another_tty(self):
-        for kind in ('wezterm', 'kitty'):
-            terminal = terminals.Terminal(kind, '7', '/tmp/socket')
-            pane = {'pane_id': 7, 'pid': 42, 'tty_name': '/dev/pts/2'}
-            with self.subTest(kind=kind), patch.object(terminals, 'os', SimpleNamespace(
-                    name='posix', getpid=lambda: 1, stat=lambda _: SimpleNamespace(st_rdev=42))), \
-                    patch.object(terminals.sys, 'platform', 'linux'), \
-                    patch.object(terminals.process_owner, 'terminal_tty', side_effect=lambda pid:'42' if pid==42 else '99'):
-                self.assertIsNone(terminal.owner([pane]))
-            with patch.object(terminals, 'os', SimpleNamespace(
-                    name='posix', getpid=lambda: 1, stat=lambda _: SimpleNamespace(st_rdev=42))), \
-                    patch.object(terminals.sys, 'platform', 'linux'), \
-                    patch.object(terminals.process_owner, 'terminal_tty', return_value='42'):
-                self.assertEqual(terminal.owner([pane]), pane)
+        for kind in ('wezterm', 'kitty', 'tmux'):
+            pane = {'pane_id': 7, 'pid': 42, 'tty_name': '/dev/pts/2', 'tty': '/dev/pts/2'}
+            other = {'pane_id': 8, 'pid': 43, 'tty_name': '/dev/pts/3', 'tty': '/dev/pts/3'}
+            with self.subTest(kind=kind), patch.object(terminals.os, 'name', 'posix'), \
+                    patch.object(terminals.process_owner, 'device', side_effect=lambda path: path[-1]), \
+                    patch.object(terminals.process_owner, 'terminal_tty', side_effect=lambda pid: str(pid - 40)):
+                self.assertIsNone(terminals.Terminal(kind, '7', '/tmp/socket', '9').owner([pane, other]))
+                self.assertIsNone(terminals.Terminal(kind, '7', '/tmp/socket', '').owner([pane, other]))
+                self.assertEqual(terminals.Terminal(kind, '7', '/tmp/socket', '2').owner([pane, other]), pane)
+                stale = terminals.Terminal(kind, '7', '/tmp/socket', '3')
+                self.assertEqual(stale.owner([pane, other]), other)
+                self.assertEqual(stale.parent, '8')
 
     def test_windows_wezterm_rejects_another_terminal_host(self):
         import process_owner
@@ -137,9 +136,9 @@ class TerminalTest(unittest.TestCase):
                 patch.object(terminals.shutil, 'which', return_value='/usr/bin/osascript'), \
                 patch.object(terminals, 'run', return_value='ttys016'):
             terminal = terminals.detect()
-        panes = [{'pane_id': 'other', 'tty': '/dev/ttys015'},
-                 {'pane_id': 'correct', 'tty': '/dev/ttys016'}]
-        self.assertEqual(terminal.owner(panes)['pane_id'], 'correct')
+            panes = [{'pane_id': 'other', 'tty': '/dev/ttys015'},
+                     {'pane_id': 'correct', 'tty': '/dev/ttys016'}]
+            self.assertEqual(terminal.owner(panes)['pane_id'], 'correct')
 
     def test_fallback_hook_keeps_queue_and_does_not_repeat_notice(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
@@ -159,7 +158,10 @@ class TerminalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.dict(os.environ, {'TMUX': '/tmp/socket,12,0', 'TMUX_PANE': '%1'}, clear=True), \
                 patch.object(terminals.shutil, 'which', return_value='/bin/tmux'), \
-                patch.object(terminals, 'run', side_effect=['%1\t@1\t40', '%2', '%1\t@1\t34\n%2\t@1\t5']) as run:
+                patch.object(terminals.process_owner, 'environment', return_value=None), \
+                patch.object(terminals.Terminal, 'owns', return_value=True), \
+                patch.object(terminals, 'run', side_effect=['%1\t@1\t40\t/dev/pts/1', '%2',
+                                                            '%1\t@1\t34\t/dev/pts/1\n%2\t@1\t5\t/dev/pts/2']) as run:
             db = tasklist.connect(Path(directory))
             identity = (os.getpid(), tasklist.process_owner.process(os.getpid())[1])
             try:

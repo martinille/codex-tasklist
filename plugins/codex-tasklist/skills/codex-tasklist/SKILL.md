@@ -7,6 +7,8 @@ description: Maintain the current Codex session's user-request queue and termina
 
 The lifecycle hook supplies the current session's CLI prefix, including the installed script path, data directory and session ID. Use that exact prefix. If absent, obtain the current `CODEX_THREAD_ID`; never guess a session ID or borrow another session's queue.
 
+The hook's data directory is the sandbox-writable temporary working database shared with the panel. Never substitute `PLUGIN_DATA` in agent commands: it holds the persistent checkpoint, which trusted hooks update after tools and lifecycle events. If the supplied temporary path is denied by a custom sandbox, report the exact error; do not silently create another queue or request broad filesystem access. After upgrading from 2.0.2, review the new `PostToolUse` hook and restart Codex.
+
 Write task titles in the conversation language used in the current session, respecting any explicit user language preference. Do not hard-code a language or infer it from the operating system locale.
 
 Run `list` before changing the queue. A new distinct user request gets `add "short title" --status active` (or `pending` if it cannot start yet). Use the numeric JSON `id` in update commands (for example `1`, not the display label `T01`). A correction or addition updates the existing entry through `update NUMBER --title "new title"`. Acknowledgements and injected context do not create tasks.

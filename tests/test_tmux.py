@@ -3,6 +3,7 @@ import os
 import json
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -114,13 +115,17 @@ class LiveTmuxTest(unittest.TestCase):
                 self.fail('tmux panel did not reach the expected state')
 
             db = tasklist.connect(root)
-            owner = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
             try:
-                tmux('-f', os.devnull, 'new-session', '-d', '-x', '80', '-y', '30', '-s', 'test', 'sleep 30')
+                tmux('-f', os.devnull, 'new-session', '-d', '-x', '80', '-y', '30', '-s', 'test', 'exec sleep 30')
                 parent = tmux('display-message', '-p', '-t', 'test', '#{pane_id}')
-                identity = (owner.pid, tasklist.process_owner.process(owner.pid)[1])
-                environment = {'TMUX': socket + ',1,0', 'TMUX_PANE': parent}
-                with patch.dict(os.environ, environment), patch.object(tasklist.process_owner, 'discover', return_value=identity):
+                owner_pid = int(tmux('display-message', '-p', '-t', 'test', '#{pane_pid}'))
+                identity = (owner_pid, tasklist.process_owner.process(owner_pid)[1])
+                environment = dict.fromkeys(('TMUX', 'TMUX_PANE', 'WEZTERM_PANE', 'KITTY_WINDOW_ID'), '')
+                with patch.dict(os.environ, environment), patch.object(tasklist.process_owner, 'discover', return_value=(1, 'daemon')), \
+                        patch.object(tasklist.process_owner, 'daemon', return_value=True), \
+                        patch.object(tasklist.process_owner, 'clients', return_value=[
+                            {'identity': identity, 'order': 1, 'tty': tasklist.process_owner.terminal_tty(owner_pid),
+                             'arguments': ['codex'], 'cwd': None}]):
                     tasklist.add(db, 'live', 'Before update', 'pending')
                     tasklist.open_panel(db, root, 'live')
                     tasklist.open_panel(db, root, 'live')
@@ -137,15 +142,13 @@ class LiveTmuxTest(unittest.TestCase):
                     eventually(lambda: len(tmux('list-panes', '-t', 'test').splitlines()) == 1)
                     tasklist.open_panel(db, root, 'live')
                     self.assertEqual(len(tmux('list-panes', '-t', 'test').splitlines()), 2)
-                    owner.terminate()
-                    owner.wait(timeout=3)
-                    eventually(lambda: len(tmux('list-panes', '-t', 'test').splitlines()) == 1)
+                    self.assertEqual(tuple(db.execute('SELECT owner_pid,parent FROM sessions').fetchone()), (owner_pid, parent))
+                    os.kill(owner_pid, signal.SIGTERM)
+                    eventually(lambda: subprocess.run([*command, 'has-session', '-t', 'test'],
+                                                      capture_output=True, timeout=5).returncode != 0)
                     self.assertEqual(tasklist.tasks(db, 'live')[0]['title'], 'Updated live')
             finally:
                 subprocess.run([*command, 'kill-server'], capture_output=True, timeout=5)
-                if owner.poll() is None:
-                    owner.terminate()
-                    owner.wait(timeout=3)
                 db.close()
 
 

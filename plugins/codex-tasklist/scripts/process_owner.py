@@ -88,6 +88,22 @@ def windows_process(pid):
         kernel.CloseHandle(handle)
 
 
+def arguments(pid):
+    try:
+        if sys.platform.startswith('linux'):
+            return (Path('/proc') / str(pid) / 'cmdline').read_bytes().decode(errors='replace').split('\0')[:-1]
+        if sys.platform == 'darwin':
+            return subprocess.run(['ps', '-p', str(pid), '-o', 'args='], check=True, capture_output=True,
+                                  text=True, timeout=0.25).stdout.split()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return []
+
+
+def daemon(pid):
+    return 'app-server' in arguments(pid)[1:]
+
+
 def discover():
     pid = os.getppid()
     visited = set()
@@ -103,6 +119,63 @@ def discover():
         if name.lower() in ('codex', 'codex.exe'):
             return pid, started
         pid = parent
+    return None
+
+
+def clients():
+    found = []
+    if sys.platform.startswith('linux'):
+        for entry in Path('/proc').iterdir():
+            try:
+                if not entry.name.isdigit() or (entry / 'comm').read_text().strip() != 'codex':
+                    continue
+                pid = int(entry.name)
+                details = process(pid)
+                if details is None or details[2] != 'codex':
+                    continue
+                found.append({'identity': (pid, details[1]), 'order': int(details[1]), 'tty': terminal_tty(pid),
+                              'arguments': arguments(pid), 'cwd': os.readlink(entry / 'cwd')})
+            except (OSError, ValueError):
+                continue
+    elif sys.platform == 'darwin':
+        try:
+            output = subprocess.run(['ps', '-axo', 'pid=,tty=,lstart=,args='], check=True, capture_output=True,
+                                    text=True, timeout=1, env={**os.environ, 'LC_ALL': 'C'}).stdout
+        except (OSError, subprocess.SubprocessError):
+            return found
+        for line in output.splitlines():
+            parts = line.split(None, 7)
+            if len(parts) < 8 or Path(parts[7].split()[0]).name != 'codex':
+                continue
+            started = ' '.join(parts[2:7])
+            try:
+                order = time.mktime(time.strptime(started, '%a %b %d %H:%M:%S %Y'))
+            except ValueError:
+                order = 0
+            found.append({'identity': (int(parts[0]), started), 'order': order,
+                          'tty': '/dev/' + parts[1] if parts[1].startswith('ttys') else '',
+                          'arguments': parts[7].split(), 'cwd': None})
+    return found
+
+
+def client(session, cwd, exclude=()):
+    found = [item for item in clients() if item['tty'] and item['identity'] not in exclude and
+             item['arguments'][1:2] not in (['exec'], ['e'], ['review'], ['agents'], ['app-server'])]
+    exact = [item for item in found if session in item['arguments']]
+    same = [item for item in found if cwd and item['cwd'] == cwd]
+    for group in (exact, same, found):
+        if group:
+            return max(group, key=lambda item: item['order'])['identity']
+    return None
+
+
+def environment(pid):
+    try:
+        if sys.platform.startswith('linux'):
+            pairs = (Path('/proc') / str(pid) / 'environ').read_bytes().decode(errors='replace').split('\0')
+            return dict(pair.split('=', 1) for pair in pairs if '=' in pair)
+    except (OSError, ValueError):
+        pass
     return None
 
 
@@ -124,6 +197,13 @@ def terminal_tty(pid):
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
         pass
     return ''
+
+
+def device(path):
+    try:
+        return str(os.stat(path).st_rdev) if sys.platform.startswith('linux') else path
+    except OSError:
+        return ''
 
 
 def in_windows_wezterm():
